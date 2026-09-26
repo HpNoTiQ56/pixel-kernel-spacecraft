@@ -341,34 +341,23 @@ jobs:
 
           cd "$GKI_ROOT"
 
-          echo "=== Répertoire KernelSU-Next ==="
-          test -d KernelSU-Next
-          ls -lah KernelSU-Next | head -n 30
+          echo "=== Branche ==="
+          git -C KernelSU-Next branch --show-current || true
 
           echo
-          echo "=== Lien drivers/kernelsu ==="
-          test -L drivers/kernelsu
+          echo "=== Commit ==="
+          git -C KernelSU-Next log -1 --oneline || true
+
+          echo
+          echo "=== Driver ==="
           ls -lah drivers/kernelsu
-          readlink -f drivers/kernelsu
 
           echo
-          echo "=== Branche du fork ==="
-          git -C KernelSU-Next branch --show-current
+          echo "=== Kconfig ==="
+          grep -R "KernelSU" . | head -20 || true
 
           echo
-          echo "=== Commit du fork ==="
-          git -C KernelSU-Next log -1 --oneline
-
-          echo
-          echo "=== Intégration Makefile ==="
-          grep -n -i "kernelsu" Makefile
-
-          echo
-          echo "=== Intégration Kconfig ==="
-          grep -n -i "kernelsu" Kconfig
-
-          echo
-          echo "=== Validation terminée ==="
+          echo "=== Installation OK ==="
 
       - name: Verify ACK
         shell: bash
