@@ -50,14 +50,6 @@ jobs:
           echo "=== DISK ==="
           df -h
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo apt-get update
-          sudo apt-get install -y jq curl xz-utils
-
       - name: Extract folder ID
         id: folder
         shell: bash
