@@ -311,6 +311,31 @@ jobs:
 
           ls -lah "$KERNEL_ROOT"
           
+      - name: Install KernelSU-Next (dev-susfs)
+        shell: bash
+        env:
+          KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+        run: |
+          set -euo pipefail
+
+          cd "$KERNEL_ROOT/common/ack"
+
+          if [ -d KernelSU ]; then
+            echo "KernelSU déjà présent, installation ignorée"
+            exit 0
+          fi
+
+          curl -LSs \
+            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" \
+            | bash -s dev-susfs
+
+          echo
+          echo "=== Vérification KernelSU ==="
+
+          find . -maxdepth 2 -iname '*kernelsu*' | sort || true
+
+          git status || true
+          
       - name: Verify ACK
         shell: bash
         env:
