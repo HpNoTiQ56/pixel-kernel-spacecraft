@@ -359,13 +359,22 @@ jobs:
           echo
           echo "=== Installation OK ==="
 
-      - name: Verify ACK
+      - name: Build GKI KernelSU-Next dev-susfs
         shell: bash
         env:
           KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
         run: |
           set -euo pipefail
 
-          ls -lah "$KERNEL_ROOT/common/ack"
+          cd "$KERNEL_ROOT"
 
-          cat "$KERNEL_ROOT/common/ack/build.config.gki.aarch64" | head
+          echo "=== Racine de compilation ==="
+          pwd
+
+          echo
+          echo "=== Vérification cible Bazel ==="
+          tools/bazel query //common/gki:kernel_aarch64
+
+          echo
+          echo "=== Build GKI KernelSU-Next dev-susfs ==="
+          time tools/bazel build //common/gki:kernel_aarch64
