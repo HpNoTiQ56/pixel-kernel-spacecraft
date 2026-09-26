@@ -293,49 +293,83 @@ jobs:
         run: |
           set -euo pipefail
 
-          KERNEL_ROOT="$(find "$WORKSPACE/build" \
-            -maxdepth 1 \
-            -type d \
-            -name 'kernel-spacecraft-*' \
-            | head -n1)"
+          KERNEL_ROOT="$(
+            find "$WORKSPACE/build" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -name 'kernel-spacecraft-*' \
+              -print \
+              -quit
+          )"
 
           if [ -z "$KERNEL_ROOT" ]; then
-            echo "::error::kernel-spacecraft-* introuvable"
+            echo "::error::Répertoire kernel-spacecraft-* introuvable"
+            exit 1
+          fi
+
+          if [ ! -d "$KERNEL_ROOT/common/gki" ]; then
+            echo "::error::Répertoire common/gki introuvable dans $KERNEL_ROOT"
             exit 1
           fi
 
           echo "kernel_root=$KERNEL_ROOT" >> "$GITHUB_OUTPUT"
+          echo "gki_root=$KERNEL_ROOT/common/gki" >> "$GITHUB_OUTPUT"
 
-          echo "Kernel root:"
-          echo "$KERNEL_ROOT"
-
-          ls -lah "$KERNEL_ROOT"
+          echo "KERNEL_ROOT=$KERNEL_ROOT"
+          echo "GKI_ROOT=$KERNEL_ROOT/common/gki"
           
-      - name: Install KernelSU-Next (dev-susfs)
+      - name: Install KernelSU-Next dev-susfs
         shell: bash
         env:
-          KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
 
-          cd "$KERNEL_ROOT/common/gki"
-
-          if [ -d KernelSU ]; then
-            echo "KernelSU déjà présent, installation ignorée"
-            exit 0
-          fi
+          cd "$GKI_ROOT"
 
           curl -LSs \
             "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
             | bash -s dev-susfs
+            
+      - name: Verify KernelSU-Next installation
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
+
+          cd "$GKI_ROOT"
+
+          echo "=== Répertoire KernelSU-Next ==="
+          test -d KernelSU-Next
+          ls -lah KernelSU-Next | head -n 30
 
           echo
-          echo "=== Vérification KernelSU ==="
+          echo "=== Lien drivers/kernelsu ==="
+          test -L drivers/kernelsu
+          ls -lah drivers/kernelsu
+          readlink -f drivers/kernelsu
 
-          find . -maxdepth 2 -iname '*kernelsu*' | sort || true
+          echo
+          echo "=== Branche du fork ==="
+          git -C KernelSU-Next branch --show-current
 
-          git status || true
-          
+          echo
+          echo "=== Commit du fork ==="
+          git -C KernelSU-Next log -1 --oneline
+
+          echo
+          echo "=== Intégration Makefile ==="
+          grep -n -i "kernelsu" Makefile
+
+          echo
+          echo "=== Intégration Kconfig ==="
+          grep -n -i "kernelsu" Kconfig
+
+          echo
+          echo "=== Validation terminée ==="
+
       - name: Verify ACK
         shell: bash
         env:
