@@ -318,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          cd "$KERNEL_ROOT/common/ack"
+          cd "$KERNEL_ROOT/common/gki"
 
           if [ -d KernelSU ]; then
             echo "KernelSU déjà présent, installation ignorée"
@@ -326,7 +326,7 @@ jobs:
           fi
 
           curl -LSs \
-            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" \
+            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
             | bash -s dev-susfs
 
           echo
