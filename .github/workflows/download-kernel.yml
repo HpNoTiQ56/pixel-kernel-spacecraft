@@ -359,7 +359,7 @@ jobs:
           echo
           echo "=== Installation OK ==="
 
-      - name: Build GKI KernelSU-Next dev-susfs
+      - name: Build GKI from sources
         shell: bash
         env:
           KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
@@ -368,13 +368,9 @@ jobs:
 
           cd "$KERNEL_ROOT"
 
-          echo "=== Racine de compilation ==="
-          pwd
-
-          echo
-          echo "=== Vérification cible Bazel ==="
-          tools/bazel query //common/gki:kernel_aarch64
-
-          echo
-          echo "=== Build GKI KernelSU-Next dev-susfs ==="
-          time tools/bazel build //common/gki:kernel_aarch64
+          time tools/bazel build \
+            --config=spacecraft \
+            --spawn_strategy=local \
+            --//build/kernel/kleaf:use_prebuilt_gki=false \
+            --//common:kernel_package_use_prebuilt_kernel=false \
+            //common/gki:kernel_aarch64
