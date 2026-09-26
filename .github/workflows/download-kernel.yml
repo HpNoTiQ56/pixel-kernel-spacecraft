@@ -4,16 +4,52 @@ on:
   workflow_dispatch:
     inputs:
       drive_folder_url:
-        description: "Lien du dossier Google Drive partagé par Xin LI contenant kernels-*.tar.xz"
+        description: "Lien du dossier Google Drive contenant kernels-*.tar.xz"
         required: true
         type: string
 
 jobs:
   download-and-extract:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - android-worker
+
+    timeout-minutes: 60
+
+    env:
+      WORKSPACE: /home/aurelien/workspace
 
     steps:
+
+      - name: Verify runner
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== HOST ==="
+          hostname
+
+          echo "=== USER ==="
+          whoami
+
+          echo "=== PWD ==="
+          pwd
+
+          mkdir -p "$WORKSPACE/src"
+          mkdir -p "$WORKSPACE/build"
+          mkdir -p "$WORKSPACE/dist"
+
+          echo
+          echo "=== WORKSPACE ==="
+          ls -lah "$WORKSPACE"
+
+          echo
+          echo "=== DISK ==="
+          df -h
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -36,12 +72,13 @@ jobs:
           )"
 
           if [ -z "$FOLDER_ID" ]; then
-            echo "::error::Impossible d'extraire l'ID du dossier depuis cette URL."
+            echo "::error::Impossible d'extraire l'ID du dossier Google Drive"
             exit 1
           fi
 
           echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
-          echo "Dossier Drive détecté : $FOLDER_ID"
+
+          echo "Folder ID : $FOLDER_ID"
 
       - name: Get Google access token
         id: auth
@@ -54,7 +91,7 @@ jobs:
           set -euo pipefail
 
           RESPONSE="$(
-            curl --silent --show-error --fail-with-body \
+            curl --silent \
               --request POST \
               --data-urlencode "client_id=$GOOGLE_CLIENT_ID" \
               --data-urlencode "client_secret=$GOOGLE_CLIENT_SECRET" \
@@ -66,12 +103,13 @@ jobs:
           ACCESS_TOKEN="$(jq -r '.access_token // empty' <<< "$RESPONSE")"
 
           if [ -z "$ACCESS_TOKEN" ]; then
-            echo "::error::Google n'a retourné aucun access_token."
-            jq -c 'del(.access_token)' <<< "$RESPONSE"
+            echo "::error::Impossible d'obtenir un access_token"
+            echo "$RESPONSE"
             exit 1
           fi
 
           echo "::add-mask::$ACCESS_TOKEN"
+
           echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Find latest kernels archive
@@ -83,16 +121,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          QUERY="'${FOLDER_ID}' in parents and trashed = false and name contains 'kernels-'"
+          QUERY="'${FOLDER_ID}' in parents and trashed=false and name contains 'kernels-'"
 
           RESPONSE="$(
-            curl --silent --show-error --fail-with-body \
+            curl --silent \
               --get \
               --header "Authorization: Bearer $ACCESS_TOKEN" \
               --data-urlencode "q=$QUERY" \
               --data-urlencode "orderBy=modifiedTime desc" \
               --data-urlencode "pageSize=100" \
-              --data-urlencode "fields=files(id,name,size,modifiedTime,mimeType)" \
+              --data-urlencode "fields=files(id,name,size,modifiedTime)" \
               "https://www.googleapis.com/drive/v3/files"
           )"
 
@@ -104,50 +142,30 @@ jobs:
               ]
               | sort_by(.modifiedTime)
               | reverse
-              | .[0] // empty
+              | .[0]
             ' <<< "$RESPONSE"
           )"
 
-          if [ -z "$FILE" ]; then
-            echo "::error::Aucun fichier kernels-*.tar.xz trouvé dans le dossier."
-            echo "Contenu retourné par Drive :"
-            jq -r '.files[]? | "\(.modifiedTime)  \(.name)"' <<< "$RESPONSE"
+          if [ "$FILE" = "null" ]; then
+            echo "::error::Aucun kernels-*.tar.xz trouvé"
             exit 1
           fi
 
           FILE_ID="$(jq -r '.id' <<< "$FILE")"
           FILE_NAME="$(jq -r '.name' <<< "$FILE")"
-          FILE_SIZE="$(jq -r '.size // "inconnue"' <<< "$FILE")"
-          MODIFIED_TIME="$(jq -r '.modifiedTime' <<< "$FILE")"
+          FILE_SIZE="$(jq -r '.size' <<< "$FILE")"
+          FILE_DATE="$(jq -r '.modifiedTime' <<< "$FILE")"
 
           echo "file_id=$FILE_ID" >> "$GITHUB_OUTPUT"
           echo "file_name=$FILE_NAME" >> "$GITHUB_OUTPUT"
 
-          {
-            echo "### Archive Drive sélectionnée"
-            echo
-            echo "- Nom : \`$FILE_NAME\`"
-            echo "- Taille : \`$FILE_SIZE octets\`"
-            echo "- Modification : \`$MODIFIED_TIME\`"
-            echo "- ID : \`$FILE_ID\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "Archive sélectionnée : $FILE_NAME"
-          echo "Dernière modification : $MODIFIED_TIME"
-          echo "Taille annoncée : $FILE_SIZE octets"
-
-      - name: Check runner disk space
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== Espace disque avant téléchargement ==="
-          df -h .
           echo
-          echo "=== Mémoire ==="
-          free -h
+          echo "Archive sélectionnée :"
+          echo "Nom     : $FILE_NAME"
+          echo "Taille  : $FILE_SIZE"
+          echo "Date    : $FILE_DATE"
 
-      - name: Download latest kernel archive
+      - name: Download latest archive
         shell: bash
         env:
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
@@ -163,16 +181,14 @@ jobs:
             --retry-delay 5 \
             --header "Authorization: Bearer $ACCESS_TOKEN" \
             "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media" \
-            --output "$FILE_NAME"
+            --output "$WORKSPACE/src/$FILE_NAME"
 
-          test -s "$FILE_NAME"
+          echo
+          echo "=== ARCHIVE ==="
 
-          echo "=== Archive téléchargée ==="
-          ls -lh "$FILE_NAME"
-          file "$FILE_NAME"
+          ls -lh "$WORKSPACE/src/$FILE_NAME"
 
-          echo "=== Test d'intégrité XZ ==="
-          xz --test "$FILE_NAME"
+          file "$WORKSPACE/src/$FILE_NAME"
 
       - name: Extract kernel sources
         id: extract
@@ -182,54 +198,51 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p workspace
+          echo "=== CLEAN BUILD DIR ==="
 
-          tar \
-            --extract \
-            --file "$FILE_NAME" \
-            --directory workspace
+          rm -rf "$WORKSPACE/build"/*
 
-          echo "source_dir=$GITHUB_WORKSPACE/workspace" >> "$GITHUB_OUTPUT"
+          mkdir -p "$WORKSPACE/build"
 
-          echo "Extraction terminée dans :"
-          echo "$GITHUB_WORKSPACE/workspace"
+          echo "=== EXTRACT ==="
+
+          tar -xf \
+            "$WORKSPACE/src/$FILE_NAME" \
+            -C "$WORKSPACE/build"
+
+          echo "source_dir=$WORKSPACE/build" >> "$GITHUB_OUTPUT"
 
       - name: Inspect extracted sources
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=== Espace disque après extraction ==="
-          df -h .
           echo
+          echo "=== ROOT ==="
+          ls -lah "$WORKSPACE/build"
 
-          echo "=== Racine du workspace ==="
-          ls -lah workspace
           echo
-
-          echo "=== Arborescence niveau 1 ==="
-          find workspace \
+          echo "=== LEVEL 1 ==="
+          find "$WORKSPACE/build" \
             -mindepth 1 \
             -maxdepth 1 \
-            -printf '%y  %p\n' \
-            | sort
-          echo
+            -printf '%y %p\n' | sort
 
-          echo "=== Arborescence niveau 2 ==="
-          find workspace \
+          echo
+          echo "=== LEVEL 2 ==="
+          find "$WORKSPACE/build" \
             -mindepth 1 \
             -maxdepth 2 \
-            -printf '%y  %p\n' \
-            | sort \
-            | head -n 250
-          echo
+            -printf '%y %p\n' | sort | head -250
 
-          echo "=== Taille des éléments principaux ==="
-          du -sh workspace/* 2>/dev/null | sort -h || true
           echo
+          echo "=== SIZE ==="
+          du -sh "$WORKSPACE/build"/* 2>/dev/null | sort -h || true
 
-          echo "=== Points de repère kernel ==="
-          find workspace \
+          echo
+          echo "=== KERNEL MARKERS ==="
+
+          find "$WORKSPACE/build" \
             -maxdepth 5 \
             \( \
               -name BUILD.bazel \
@@ -239,6 +252,4 @@ jobs:
               -o -name build.config.gki.aarch64 \
               -o -name Makefile \
             \) \
-            -print \
-            | sort \
-            | head -n 250
+            -print | sort
