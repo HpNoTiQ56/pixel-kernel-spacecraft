@@ -166,21 +166,62 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --retry-delay 5 \
-            --header "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media" \
-            --output "$WORKSPACE/src/$FILE_NAME"
+          ARCHIVE="$WORKSPACE/src/$FILE_NAME"
+
+          echo "Archive attendue :"
+          echo "$ARCHIVE"
+
+          if [ -f "$ARCHIVE" ] && [ -s "$ARCHIVE" ]; then
+
+            echo
+            echo "================================="
+            echo "ARCHIVE DEJA PRESENTE"
+            echo "================================="
+            echo
+
+            ls -lh "$ARCHIVE"
+            file "$ARCHIVE"
+
+          else
+
+            echo
+            echo "================================="
+            echo "TELECHARGEMENT"
+            echo "================================="
+            echo
+
+            curl \
+              --fail \
+              --location \
+              --retry 3 \
+              --retry-delay 5 \
+              --header "Authorization: Bearer $ACCESS_TOKEN" \
+              "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media" \
+              --output "$ARCHIVE"
+
+            echo
+            echo "Archive téléchargée :"
+
+            ls -lh "$ARCHIVE"
+            file "$ARCHIVE"
+
+          fi
 
           echo
-          echo "=== ARCHIVE ==="
+          echo "=== Archives présentes ==="
 
-          ls -lh "$WORKSPACE/src/$FILE_NAME"
+          ls -lh "$WORKSPACE/src"
 
-          file "$WORKSPACE/src/$FILE_NAME"
+      - name: Cleanup old archives
+        shell: bash
+        run: |
+          find "$WORKSPACE/src" \
+            -name 'kernels-*.tar.xz' \
+            -mtime +90 \
+            -delete || true
+
+          echo "=== Archives conservées ==="
+          ls -lh "$WORKSPACE/src"
 
       - name: Extract kernel sources
         id: extract
@@ -245,3 +286,38 @@ jobs:
               -o -name Makefile \
             \) \
             -print | sort
+            
+      - name: Detect kernel root
+        id: root
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KERNEL_ROOT="$(find "$WORKSPACE/build" \
+            -maxdepth 1 \
+            -type d \
+            -name 'kernel-spacecraft-*' \
+            | head -n1)"
+
+          if [ -z "$KERNEL_ROOT" ]; then
+            echo "::error::kernel-spacecraft-* introuvable"
+            exit 1
+          fi
+
+          echo "kernel_root=$KERNEL_ROOT" >> "$GITHUB_OUTPUT"
+
+          echo "Kernel root:"
+          echo "$KERNEL_ROOT"
+
+          ls -lah "$KERNEL_ROOT"
+          
+      - name: Verify ACK
+        shell: bash
+        env:
+          KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+        run: |
+          set -euo pipefail
+
+          ls -lah "$KERNEL_ROOT/common/ack"
+
+          cat "$KERNEL_ROOT/common/ack/build.config.gki.aarch64" | head
