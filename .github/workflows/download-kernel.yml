@@ -368,9 +368,21 @@ jobs:
 
           cd "$KERNEL_ROOT"
 
+          echo "=== Racine Spacecraft ==="
+          pwd
+
+          echo
+          echo "=== KernelSU-Next ==="
+          git -C common/gki/KernelSU-Next branch --show-current
+          git -C common/gki/KernelSU-Next log -1 --oneline
+          git -C common/gki/KernelSU-Next describe --tags --always
+
+          echo
+          echo "=== Compilation GKI depuis les sources ==="
+
           time tools/bazel build \
             --config=spacecraft \
-            --spawn_strategy=local \
+            --strategy=KernelBuild=local \
             --//build/kernel/kleaf:use_prebuilt_gki=false \
             --//common:kernel_package_use_prebuilt_kernel=false \
             //common/gki:kernel_aarch64
