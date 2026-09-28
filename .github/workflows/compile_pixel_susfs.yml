@@ -371,29 +371,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
+      
           mkdir -p "$WORKSPACE/tools"
-
+      
           if [ ! -x "$WORKSPACE/tools/magiskboot" ]; then
-
+      
             cd "$WORKSPACE/tools"
-
+      
             curl -L \
-              https://github.com/topjohnwu/Magisk/releases/latest/download/app-release.apk \
+              https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk-v30.7.apk \
               -o magisk.apk
-
+      
             unzip -j \
               magisk.apk \
               "lib/x86_64/libmagiskboot.so" \
               -d .
-
+      
             mv libmagiskboot.so magiskboot
-
+      
             chmod +x magiskboot
-
+      
             rm -f magisk.apk
           fi
-
+      
           "$WORKSPACE/tools/magiskboot" --help | head
       - name: Inspect extracted sources
         shell: bash
