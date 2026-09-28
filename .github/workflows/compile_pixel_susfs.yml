@@ -312,20 +312,20 @@ jobs:
           
       - name: Install extract-ikconfig
         shell: bash
-        env:
-          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
       
+          mkdir -p "$WORKSPACE/tools"
+      
           curl -L \
             https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig \
-            -o "$GKI_ROOT/scripts/extract-ikconfig"
+            -o "$WORKSPACE/tools/extract-ikconfig"
       
           chmod +x \
-            "$GKI_ROOT/scripts/extract-ikconfig"
+            "$WORKSPACE/tools/extract-ikconfig"
       
           head -5 \
-            "$GKI_ROOT/scripts/extract-ikconfig"
+            "$WORKSPACE/tools/extract-ikconfig"
       
       - name: Extract boot image from OTA
         id: ota
@@ -1006,48 +1006,34 @@ jobs:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
-
+      
           MAGISKBOOT="$WORKSPACE/tools/magiskboot"
-
+          EXTRACT_IKCONFIG="$WORKSPACE/tools/extract-ikconfig"
+      
           rm -rf "$WORKSPACE/stockconfig"
           mkdir -p "$WORKSPACE/stockconfig"
-
+      
           cd "$WORKSPACE/stockconfig"
-
-          echo "=== Extracting kernel from boot ==="
+      
           "$MAGISKBOOT" unpack "$BOOT_IMG"
-
+      
           test -f kernel
-
-          echo "=== Extracting stock config ==="
-          "$GKI_ROOT/scripts/extract-ikconfig" \
-            kernel \
-            > stock_defconfig
-
+      
+          "$EXTRACT_IKCONFIG" kernel > stock_defconfig
+      
           test -s stock_defconfig
-
-          echo "=== Preview ==="
-          head -20 stock_defconfig
-
+      
           mkdir -p \
             "$GKI_ROOT/arch/arm64/configs"
-
+      
           cp \
             stock_defconfig \
             "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
-
-          echo "stock_defconfig=$GKI_ROOT/arch/arm64/configs/stock_defconfig" \
-            >> "$GITHUB_OUTPUT"
-
-          echo
-          echo "=== Verification ==="
-
-          grep -E \
-            '^CONFIG_IKCONFIG=|^CONFIG_IKCONFIG_PROC=' \
-            "$GKI_ROOT/arch/arm64/configs/stock_defconfig" \
-            || true
-
+      
           ls -lh \
+            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
+      
+          head -20 \
             "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
             
       - name: Build GKI from sources
