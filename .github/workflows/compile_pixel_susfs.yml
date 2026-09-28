@@ -541,24 +541,45 @@ jobs:
 
           echo
           echo "=== Test préalable du patch kernel ==="
-
+          
           cd "$GKI_ROOT"
-
-          patch \
+          
+          if ! patch \
             --dry-run \
             --forward \
             --batch \
             -p1 \
             < "$KERNEL_PATCH_LOCAL"
-
+          then
+            echo "Patch SUSFS officiel partiellement compatible avec ce snapshot Spacecraft."
+            echo "Les fixups locaux seront appliqués ensuite."
+          fi
+          
           echo
           echo "=== Application du patch kernel ==="
+          
+          patch \
+            --forward \
+            --batch \
+            -p1 \
+            < "$KERNEL_PATCH_LOCAL" || true
+
+      - name: Apply Spacecraft SUSFS fixups
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
+
+          cd "$GKI_ROOT"
 
           patch \
             --forward \
             --batch \
             -p1 \
-            < "$KERNEL_PATCH_LOCAL"
+            < "$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
+
+          echo "=== Spacecraft fixups appliqués ==="
 
           echo
           echo "=== Vérification des fichiers copiés ==="
