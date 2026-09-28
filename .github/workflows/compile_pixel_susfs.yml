@@ -23,7 +23,9 @@ jobs:
       WORKSPACE: /home/aurelien/workspace
 
     steps:
-
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+        
       - name: Verify runner
         shell: bash
         run: |
@@ -540,29 +542,36 @@ jobs:
             "$GKI_ROOT/include/linux/"
 
           echo
-          echo "=== Test préalable du patch kernel ==="
+          echo "=== Application partielle du patch SUSFS officiel ==="
           
           cd "$GKI_ROOT"
           
-          if ! patch \
-            --dry-run \
-            --forward \
-            --batch \
-            -p1 \
-            < "$KERNEL_PATCH_LOCAL"
-          then
-            echo "Patch SUSFS officiel partiellement compatible avec ce snapshot Spacecraft."
-            echo "Les fixups locaux seront appliqués ensuite."
-          fi
-          
-          echo
-          echo "=== Application du patch kernel ==="
+          set +e
           
           patch \
             --forward \
             --batch \
             -p1 \
-            < "$KERNEL_PATCH_LOCAL" || true
+            < "$KERNEL_PATCH_LOCAL"
+          
+          PATCH_STATUS=$?
+          
+          set -e
+          
+          if [ "$PATCH_STATUS" -ne 0 ]; then
+            echo "Le patch officiel contient des hunks incompatibles avec ce snapshot."
+            echo "Poursuite avec le patch complémentaire Spacecraft."
+          fi
+          
+          echo
+          echo "=== Rejets produits par le patch officiel ==="
+          
+          find "$GKI_ROOT" \
+            -type f \
+            -name '*.rej' \
+            -print \
+            -exec cat {} \; \
+            || true
 
       - name: Apply Spacecraft SUSFS fixups
         shell: bash
@@ -571,15 +580,67 @@ jobs:
         run: |
           set -euo pipefail
 
+          FIXUP_PATCH="$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
+
+          echo "=== Patch complémentaire ==="
+          ls -lh "$FIXUP_PATCH"
+
           cd "$GKI_ROOT"
+
+          echo
+          echo "=== Test du patch complémentaire ==="
+
+          patch \
+            --dry-run \
+            --forward \
+            --batch \
+            -p1 \
+            < "$FIXUP_PATCH"
+
+          echo
+          echo "=== Application du patch complémentaire ==="
 
           patch \
             --forward \
             --batch \
             -p1 \
-            < "$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
+            < "$FIXUP_PATCH"
 
-          echo "=== Spacecraft fixups appliqués ==="
+          echo
+          echo "=== Suppression des rejets désormais corrigés ==="
+
+          rm -f \
+            fs/exec.c.rej \
+            fs/proc/task_mmu.c.rej
+
+          echo
+          echo "=== Vérification des corrections ==="
+
+          grep -n -C 3 \
+            'include <linux/susfs_def.h>' \
+            fs/exec.c
+
+          grep -n -A 8 \
+            '^static int show_smap' \
+            fs/proc/task_mmu.c
+
+          echo
+          echo "=== Vérification des rejets restants ==="
+
+          REMAINING_REJECTS="$(
+            find "$GKI_ROOT" \
+              -type f \
+              -name '*.rej' \
+              -print
+          )"
+
+          if [ -n "$REMAINING_REJECTS" ]; then
+            echo "::error::Des rejets non traités subsistent :"
+            echo "$REMAINING_REJECTS"
+            exit 1
+          fi
+
+          echo "Patch complémentaire appliqué correctement."
 
           echo
           echo "=== Vérification des fichiers copiés ==="
