@@ -493,11 +493,12 @@ jobs:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
           SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
           KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
+          KMI_STRING: ${{ steps.kmi.outputs.kmi_string }}
         run: |
           set -euo pipefail
 
           KERNEL_PATCH_SOURCE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-${KMI_STRING}.patch"
-          KERNEL_PATCH_LOCAL="$GKI_ROOT/50_add_susfs_in_kernel-${KERNEL_SERIES}.patch"
+          KERNEL_PATCH_LOCAL="$GKI_ROOT/50_add_susfs_in_gki-${KMI_STRING}.patch"
 
           echo "=== Paramètres SUSFS ==="
           echo "GKI_ROOT=$GKI_ROOT"
