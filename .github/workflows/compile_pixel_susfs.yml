@@ -228,26 +228,30 @@ jobs:
           echo "=== Archives conservées ==="
           ls -lh "$WORKSPACE/src"
           
-      - name: Extract boot image from OTA
-        id: ota
+      - name: Install payload-dumper-go
         shell: bash
-        env:
-          OTA_URL: ${{ inputs.ota_url }}
         run: |
-          set -euo pipefail
+          mkdir -p "$HOME/bin"
+      
+          curl -L \
+            https://github.com/ssut/payload-dumper-go/releases/latest/download/payload-dumper-go_linux_amd64.tar.gz \
+            -o payload-dumper-go.tar.gz
+      
+          tar -xzf payload-dumper-go.tar.gz
+      
+          chmod +x payload-dumper-go
+      
+          mv payload-dumper-go "$HOME/bin/"
+      
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-          mkdir -p "$WORKSPACE/ota"
 
-          cd "$WORKSPACE/ota"
-
-          python3 payload_dumper.py \
-            --partition boot \
+      - name: Extract boot image
+        run: |
+          payload-dumper-go \
+            -p boot \
             "$OTA_URL"
-
-          test -f boot.img
-
-          echo "boot_img=$WORKSPACE/ota/boot.img" >> "$GITHUB_OUTPUT"
-          
+            
       - name: Extract kernel sources
         id: extract
         shell: bash
