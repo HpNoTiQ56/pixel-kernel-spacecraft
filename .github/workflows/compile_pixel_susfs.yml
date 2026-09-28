@@ -572,7 +572,7 @@ jobs:
           echo
           echo "=== Patch SUSFS kernel appliqué ==="
 
-         - name: Verify SUSFS kernel integration
+      - name: Verify SUSFS kernel integration
         shell: bash
         env:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
@@ -632,10 +632,10 @@ jobs:
           grep -n -E \
             'config KSU|config KSU_SUSFS|KSU_SUSFS' \
             KernelSU-Next/kernel/Kconfig \
-            | head -n 60
+            | head -n 60 || true
 
           echo
-          echo "=== Références SUSFS dans les sources KernelSU ==="
+          echo "=== Références SUSFS dans KernelSU-Next ==="
 
           grep -R -n -m 30 \
             -E 'linux/susfs\.h|CONFIG_KSU_SUSFS' \
@@ -646,7 +646,14 @@ jobs:
           echo
           echo "=== Vérifications bloquantes ==="
 
-          grep -q
+          grep -q -E 'susfs(\.o)?' fs/Makefile
+          grep -q 'KSU_SUSFS' KernelSU-Next/kernel/Kconfig
+          grep -R -q 'linux/susfs\.h' KernelSU-Next/kernel
+          test -s include/linux/susfs.h
+          test -s fs/susfs.c
+
+          echo
+          echo "=== Intégration SUSFS kernel validée ==="
           
       - name: Build GKI from sources
         shell: bash
