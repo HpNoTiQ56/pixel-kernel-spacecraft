@@ -240,7 +240,7 @@ jobs:
 
           cd "$WORKSPACE/ota"
 
-          python payload_dumper.py \
+          python3 payload_dumper.py \
             --partition boot \
             "$OTA_URL"
 
