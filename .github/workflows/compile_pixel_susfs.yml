@@ -228,30 +228,24 @@ jobs:
           echo "=== Archives conservées ==="
           ls -lh "$WORKSPACE/src"
           
-      - name: Install payload-dumper-go
+      - name: Install payload-dumper
         shell: bash
         run: |
           set -euo pipefail
       
           mkdir -p "$WORKSPACE/tools"
       
-          if [ ! -x "$WORKSPACE/tools/payload-dumper-go" ]; then
+          if [ ! -d "$WORKSPACE/tools/payload-dumper" ]; then
       
-            cd "$WORKSPACE/tools"
+            git clone \
+              --depth 1 \
+              https://github.com/5ec1cff/payload-dumper.git \
+              "$WORKSPACE/tools/payload-dumper"
       
-            curl -L \
-              https://github.com/ssut/payload-dumper-go/releases/download/2.1.0/payload-dumper-go_2.1.0_linux_amd64.tar.gz \
-              -o payload-dumper-go.tar.gz
+            cd "$WORKSPACE/tools/payload-dumper"
       
-            tar -xzf payload-dumper-go.tar.gz
-      
-            chmod +x payload-dumper-go
-      
-            rm payload-dumper-go.tar.gz
-      
+            pip3 install -r requirements.txt
           fi
-      
-          "$WORKSPACE/tools/payload-dumper-go" --help | head
 
       - name: Extract boot from OTA
         id: ota
