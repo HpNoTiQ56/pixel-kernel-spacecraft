@@ -382,7 +382,7 @@ jobs:
               https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk-v30.7.apk \
               -o magisk.apk
       
-            unzip -j \
+            unzip -o -j \
               magisk.apk \
               "lib/x86_64/libmagiskboot.so" \
               -d .
@@ -394,7 +394,8 @@ jobs:
             rm -f magisk.apk
           fi
       
-          "$WORKSPACE/tools/magiskboot" --help | head
+          "$WORKSPACE/tools/magiskboot"
+    
       - name: Inspect extracted sources
         shell: bash
         run: |
