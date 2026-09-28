@@ -231,49 +231,78 @@ jobs:
       - name: Install payload-dumper-go
         shell: bash
         run: |
-          mkdir -p "$HOME/bin"
+          set -euo pipefail
       
-          curl -L \
-            https://github.com/ssut/payload-dumper-go/releases/latest/download/payload-dumper-go_linux_amd64.tar.gz \
-            -o payload-dumper-go.tar.gz
+          mkdir -p "$WORKSPACE/tools"
       
-          tar -xzf payload-dumper-go.tar.gz
+          if [ ! -x "$WORKSPACE/tools/payload-dumper-go" ]; then
       
-          chmod +x payload-dumper-go
+            cd "$WORKSPACE/tools"
       
-          mv payload-dumper-go "$HOME/bin/"
+            curl -L \
+              https://github.com/ssut/payload-dumper-go/releases/download/2.1.0/payload-dumper-go_2.1.0_linux_amd64.tar.gz \
+              -o payload-dumper-go.tar.gz
       
-          echo "$HOME/bin" >> $GITHUB_PATH
+            tar -xzf payload-dumper-go.tar.gz
+      
+            chmod +x payload-dumper-go
+      
+            rm payload-dumper-go.tar.gz
+      
+          fi
+      
+          "$WORKSPACE/tools/payload-dumper-go" --help | head
 
-
-      - name: Extract boot image
-        run: |
-          payload-dumper-go \
-            -p boot \
-            "$OTA_URL"
-            
-      - name: Extract kernel sources
-        id: extract
+      - name: Extract boot from OTA
+        id: ota
         shell: bash
         env:
-          FILE_NAME: ${{ steps.kernel.outputs.file_name }}
+          OTA_URL: ${{ inputs.ota_url }}
+        run: |
+          set -euo pipefail
+      
+          mkdir -p "$WORKSPACE/ota"
+      
+          cd "$WORKSPACE/ota"
+      
+          "$WORKSPACE/tools/payload-dumper-go" \
+            -p boot \
+            "$OTA_URL"
+      
+          test -f boot.img
+      
+          echo "boot_img=$WORKSPACE/ota/boot.img" >> "$GITHUB_OUTPUT"
+      
+          ls -lh boot.img
+          
+      - name: Install MagiskBoot
+        shell: bash
         run: |
           set -euo pipefail
 
-          echo "=== CLEAN BUILD DIR ==="
+          mkdir -p "$WORKSPACE/tools"
 
-          rm -rf "$WORKSPACE/build"/*
+          if [ ! -x "$WORKSPACE/tools/magiskboot" ]; then
 
-          mkdir -p "$WORKSPACE/build"
+            cd "$WORKSPACE/tools"
 
-          echo "=== EXTRACT ==="
+            curl -L \
+              https://github.com/topjohnwu/Magisk/releases/latest/download/app-release.apk \
+              -o magisk.apk
 
-          tar -xf \
-            "$WORKSPACE/src/$FILE_NAME" \
-            -C "$WORKSPACE/build"
+            unzip -j \
+              magisk.apk \
+              "lib/x86_64/libmagiskboot.so" \
+              -d .
 
-          echo "source_dir=$WORKSPACE/build" >> "$GITHUB_OUTPUT"
+            mv libmagiskboot.so magiskboot
 
+            chmod +x magiskboot
+
+            rm -f magisk.apk
+          fi
+
+          "$WORKSPACE/tools/magiskboot" --help | head
       - name: Inspect extracted sources
         shell: bash
         run: |
@@ -840,19 +869,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          MAGISKBOOT="$WORKSPACE/tools/magiskboot"
+
           mkdir -p "$WORKSPACE/dist/repack"
 
           cd "$WORKSPACE/dist/repack"
 
           cp "$BOOT_IMG" boot.img
 
-          magiskboot unpack boot.img
+          "$MAGISKBOOT" unpack boot.img
 
           cp \
             "$KERNEL_ROOT/bazel-bin/common/gki/kernel_aarch64/Image.lz4" \
             kernel
 
-          magiskboot repack boot.img
+          "$MAGISKBOOT" repack boot.img
 
           FINAL_NAME="${SPL}_boot_KSU${KSU_VERSION}_susfs${SUSFS_VERSION}.img"
 
