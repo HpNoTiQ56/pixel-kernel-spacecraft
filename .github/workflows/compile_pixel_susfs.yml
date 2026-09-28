@@ -396,6 +396,42 @@ jobs:
       
           echo "MagiskBoot installé"
           
+      - name: Extract stock kernel metadata
+        id: stockkernel
+        shell: bash
+        env:
+          BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
+        run: |
+          set -euo pipefail
+
+          FULL_VERSION="$(
+            strings "$BOOT_IMG" |
+              grep -a "Linux version" |
+              head -1
+          )"
+
+          RELEASE_SUFFIX="$(
+            echo "$FULL_VERSION" |
+              sed -n 's#.*Linux version [0-9.]*\\(-android[^ ]*\\).*#\\1#p'
+          )"
+
+          PREEMPT_LINE="$(
+            strings "$BOOT_IMG" |
+              grep -a '#1 SMP PREEMPT' |
+              head -1
+          )"
+
+          BUILD_TIMESTAMP="$(
+            echo "$PREEMPT_LINE" |
+              sed 's/^#1 SMP PREEMPT //'
+          )"
+
+          echo "release_suffix=$RELEASE_SUFFIX" >> "$GITHUB_OUTPUT"
+          echo "build_timestamp=$BUILD_TIMESTAMP" >> "$GITHUB_OUTPUT"
+
+          echo "RELEASE_SUFFIX=$RELEASE_SUFFIX"
+          echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP"
+
       - name: Extract kernel sources
         id: extract
         shell: bash
@@ -560,7 +596,27 @@ jobs:
             echo "- KMI : \`$KMI_STRING\`"
             echo "- Branche SUSFS : \`$SUSFS_BRANCH\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          
+
+      - name: Spoof kernel metadata
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+          RELEASE_SUFFIX: ${{ steps.stockkernel.outputs.release_suffix }}
+        run: |
+          set -euo pipefail
+
+          cd "$GKI_ROOT"
+
+          # Suppression du -dirty
+          sed -i \
+            "s/printf '%s' -dirty/printf '%s' ''/g" \
+            scripts/setlocalversion
+
+          # Remplacement du dernier echo
+          sed -i \
+            "s#echo \"\${KERNELVERSION}\${file_localversion}\${config_localversion}\${LOCALVERSION}\${scm_version}\"#echo \"\${KERNELVERSION}${RELEASE_SUFFIX}\"#" \
+            scripts/setlocalversion
+            
       - name: Install KernelSU-Next dev-susfs
         shell: bash
         env:
@@ -928,6 +984,10 @@ jobs:
         shell: bash
         env:
           KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+          KBUILD_BUILD_USER: kleaf
+          KBUILD_BUILD_HOST: build-host
+          KBUILD_BUILD_TIMESTAMP: ${{ steps.stockkernel.outputs.build_timestamp }}
+          
         run: |
           set -euo pipefail
 
