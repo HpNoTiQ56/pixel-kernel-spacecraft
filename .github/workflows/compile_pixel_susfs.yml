@@ -319,6 +319,75 @@ jobs:
           echo "KERNEL_ROOT=$KERNEL_ROOT"
           echo "GKI_ROOT=$KERNEL_ROOT/common/gki"
           
+      - name: Detect Android KMI version
+        id: kmi
+        shell: bash
+        env:
+          KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
+
+          KERNEL_VERSION="$(
+            awk '$1 == "VERSION" && $2 == "=" { print $3; exit }' \
+              "$GKI_ROOT/Makefile"
+          )"
+
+          KERNEL_PATCHLEVEL="$(
+            awk '$1 == "PATCHLEVEL" && $2 == "=" { print $3; exit }' \
+              "$GKI_ROOT/Makefile"
+          )"
+
+          KERNEL_SERIES="${KERNEL_VERSION}.${KERNEL_PATCHLEVEL}"
+
+          echo "=== Version Linux ==="
+          echo "$KERNEL_SERIES"
+
+          KMI_STRING="$(
+            grep -RhoE \
+              'android[0-9]+-[0-9]+\.[0-9]+' \
+              "$GKI_ROOT/BUILD.bazel" \
+              "$GKI_ROOT/build.config"* \
+              "$KERNEL_ROOT/MODULE.bazel" \
+              "$KERNEL_ROOT/private/devices/google/spacecraft" \
+              2>/dev/null \
+            | sort -u \
+            | head -n 1 \
+            || true
+          )"
+
+          if [ -z "$KMI_STRING" ]; then
+            echo "::error::Impossible de détecter automatiquement le KMI Android."
+            echo "Version Linux détectée : $KERNEL_SERIES"
+            exit 1
+          fi
+
+          KMI_KERNEL_SERIES="${KMI_STRING#*-}"
+
+          if [ "$KMI_KERNEL_SERIES" != "$KERNEL_SERIES" ]; then
+            echo "::error::Incohérence KMI : $KMI_STRING mais Makefile indique $KERNEL_SERIES"
+            exit 1
+          fi
+
+          SUSFS_BRANCH="gki-${KMI_STRING}-dev"
+
+          echo
+          echo "=== KMI détecté ==="
+          echo "KMI_STRING=$KMI_STRING"
+          echo "SUSFS_BRANCH=$SUSFS_BRANCH"
+
+          echo "kernel_series=$KERNEL_SERIES" >> "$GITHUB_OUTPUT"
+          echo "kmi_string=$KMI_STRING" >> "$GITHUB_OUTPUT"
+          echo "susfs_branch=$SUSFS_BRANCH" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### KMI détecté"
+            echo
+            echo "- Linux : \`$KERNEL_SERIES\`"
+            echo "- KMI : \`$KMI_STRING\`"
+            echo "- Branche SUSFS : \`$SUSFS_BRANCH\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          
       - name: Install KernelSU-Next dev-susfs
         shell: bash
         env:
@@ -359,6 +428,226 @@ jobs:
           echo
           echo "=== Installation OK ==="
 
+      - name: Clone matching SUSFS branch
+        id: susfs
+        shell: bash
+        env:
+          SUSFS_BRANCH: ${{ steps.kmi.outputs.susfs_branch }}
+        run: |
+          set -euo pipefail
+
+          SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
+          SUSFS_DIR="$WORKSPACE/susfs4ksu"
+
+          echo "=== Branche SUSFS demandée ==="
+          echo "$SUSFS_BRANCH"
+
+          if ! git ls-remote \
+            --exit-code \
+            --heads \
+            "$SUSFS_REPO" \
+            "refs/heads/$SUSFS_BRANCH" \
+            >/dev/null; then
+
+            echo "::error::La branche $SUSFS_BRANCH n'existe pas dans susfs4ksu."
+            exit 1
+          fi
+
+          rm -rf "$SUSFS_DIR"
+
+          git clone \
+            --depth 1 \
+            --single-branch \
+            --branch "$SUSFS_BRANCH" \
+            "$SUSFS_REPO" \
+            "$SUSFS_DIR"
+
+          SUSFS_COMMIT="$(
+            git -C "$SUSFS_DIR" rev-parse HEAD
+          )"
+
+          SUSFS_SUBJECT="$(
+            git -C "$SUSFS_DIR" log -1 --format='%s'
+          )"
+
+          echo "susfs_dir=$SUSFS_DIR" >> "$GITHUB_OUTPUT"
+          echo "susfs_commit=$SUSFS_COMMIT" >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "=== SUSFS sélectionné ==="
+          echo "Branche : $SUSFS_BRANCH"
+          echo "Commit  : $SUSFS_COMMIT"
+          echo "Message : $SUSFS_SUBJECT"
+
+          {
+            echo "### SUSFS"
+            echo
+            echo "- Branche : \`$SUSFS_BRANCH\`"
+            echo "- Commit : \`$SUSFS_COMMIT\`"
+            echo "- Message : \`$SUSFS_SUBJECT\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Integrate SUSFS into GKI kernel
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+          SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
+          KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
+        run: |
+          set -euo pipefail
+
+          KERNEL_PATCH_SOURCE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-${KERNEL_SERIES}.patch"
+          KERNEL_PATCH_LOCAL="$GKI_ROOT/50_add_susfs_in_kernel-${KERNEL_SERIES}.patch"
+
+          echo "=== Paramètres SUSFS ==="
+          echo "GKI_ROOT=$GKI_ROOT"
+          echo "SUSFS_DIR=$SUSFS_DIR"
+          echo "KERNEL_SERIES=$KERNEL_SERIES"
+          echo "KERNEL_PATCH_SOURCE=$KERNEL_PATCH_SOURCE"
+
+          echo
+          echo "=== Validation des fichiers nécessaires ==="
+
+          test -d "$GKI_ROOT"
+          test -d "$GKI_ROOT/fs"
+          test -d "$GKI_ROOT/include/linux"
+          test -d "$GKI_ROOT/KernelSU-Next"
+          test -L "$GKI_ROOT/drivers/kernelsu"
+
+          test -f "$KERNEL_PATCH_SOURCE"
+          test -d "$SUSFS_DIR/kernel_patches/fs"
+          test -d "$SUSFS_DIR/kernel_patches/include/linux"
+
+          ls -lh "$KERNEL_PATCH_SOURCE"
+
+          echo
+          echo "=== Copie du patch kernel ==="
+
+          cp -f \
+            "$KERNEL_PATCH_SOURCE" \
+            "$KERNEL_PATCH_LOCAL"
+
+          echo
+          echo "=== Copie des sources SUSFS dans common/gki ==="
+
+          cp -af \
+            "$SUSFS_DIR/kernel_patches/fs/." \
+            "$GKI_ROOT/fs/"
+
+          cp -af \
+            "$SUSFS_DIR/kernel_patches/include/linux/." \
+            "$GKI_ROOT/include/linux/"
+
+          echo
+          echo "=== Test préalable du patch kernel ==="
+
+          cd "$GKI_ROOT"
+
+          patch \
+            --dry-run \
+            --forward \
+            --batch \
+            -p1 \
+            < "$KERNEL_PATCH_LOCAL"
+
+          echo
+          echo "=== Application du patch kernel ==="
+
+          patch \
+            --forward \
+            --batch \
+            -p1 \
+            < "$KERNEL_PATCH_LOCAL"
+
+          echo
+          echo "=== Vérification des fichiers copiés ==="
+
+          test -s "$GKI_ROOT/fs/susfs.c"
+          test -s "$GKI_ROOT/include/linux/susfs.h"
+
+          ls -lh \
+            "$GKI_ROOT/fs/susfs.c" \
+            "$GKI_ROOT/include/linux/susfs.h"
+
+          echo
+          echo "=== Patch SUSFS kernel appliqué ==="
+
+         - name: Verify SUSFS kernel integration
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+          KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
+          SUSFS_BRANCH: ${{ steps.kmi.outputs.susfs_branch }}
+        run: |
+          set -euo pipefail
+
+          cd "$GKI_ROOT"
+
+          echo "=== Versions sélectionnées ==="
+          echo "Kernel Linux : $KERNEL_SERIES"
+          echo "Branche SUSFS : $SUSFS_BRANCH"
+
+          echo
+          echo "=== KernelSU-Next ==="
+
+          test -d KernelSU-Next
+          test -L drivers/kernelsu
+
+          echo "Branche KernelSU-Next :"
+          git -C KernelSU-Next branch --show-current
+
+          echo "Commit KernelSU-Next :"
+          git -C KernelSU-Next log -1 --oneline
+
+          echo "Tag KernelSU-Next :"
+          git -C KernelSU-Next describe --tags --always
+
+          echo "Lien drivers/kernelsu :"
+          ls -lah drivers/kernelsu
+          readlink -f drivers/kernelsu
+
+          echo
+          echo "=== Fichiers SUSFS ==="
+
+          test -s include/linux/susfs.h
+          test -s fs/susfs.c
+
+          ls -lh \
+            include/linux/susfs.h \
+            fs/susfs.c
+
+          echo
+          echo "=== Intégration fs/Makefile ==="
+
+          grep -n -E 'susfs(\.o)?' fs/Makefile
+
+          echo
+          echo "=== Intégration fs/Kconfig ==="
+
+          grep -n -E 'SUSFS|susfs' fs/Kconfig || true
+
+          echo
+          echo "=== Configuration KernelSU-Next SUSFS ==="
+
+          grep -n -E \
+            'config KSU|config KSU_SUSFS|KSU_SUSFS' \
+            KernelSU-Next/kernel/Kconfig \
+            | head -n 60
+
+          echo
+          echo "=== Références SUSFS dans les sources KernelSU ==="
+
+          grep -R -n -m 30 \
+            -E 'linux/susfs\.h|CONFIG_KSU_SUSFS' \
+            KernelSU-Next/kernel \
+            drivers/kernelsu \
+            || true
+
+          echo
+          echo "=== Vérifications bloquantes ==="
+
+          grep -q
+          
       - name: Build GKI from sources
         shell: bash
         env:
