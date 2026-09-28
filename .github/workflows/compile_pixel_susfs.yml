@@ -232,42 +232,75 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-      
+
+          PAYLOAD_DUMPER_DIR="$WORKSPACE/tools/payload-dumper"
+          PAYLOAD_DUMPER_VENV="$PAYLOAD_DUMPER_DIR/.venv"
+
           mkdir -p "$WORKSPACE/tools"
-      
-          if [ ! -d "$WORKSPACE/tools/payload-dumper" ]; then
-      
+
+          if [ ! -d "$PAYLOAD_DUMPER_DIR/.git" ]; then
+            rm -rf "$PAYLOAD_DUMPER_DIR"
+
             git clone \
               --depth 1 \
               https://github.com/5ec1cff/payload-dumper.git \
-              "$WORKSPACE/tools/payload-dumper"
-      
-            cd "$WORKSPACE/tools/payload-dumper"
-      
-            pip3 install -r requirements.txt
+              "$PAYLOAD_DUMPER_DIR"
+          else
+            git -C "$PAYLOAD_DUMPER_DIR" pull --ff-only
           fi
 
-      - name: Extract boot from OTA
+          if [ ! -x "$PAYLOAD_DUMPER_VENV/bin/python" ]; then
+            python3 -m venv "$PAYLOAD_DUMPER_VENV"
+          fi
+
+          "$PAYLOAD_DUMPER_VENV/bin/python" \
+            -m pip install \
+            --upgrade pip setuptools wheel
+
+          "$PAYLOAD_DUMPER_VENV/bin/python" \
+            -m pip install \
+            -r "$PAYLOAD_DUMPER_DIR/requirements.txt"
+
+          echo "=== payload-dumper installé ==="
+
+          "$PAYLOAD_DUMPER_VENV/bin/python" \
+            "$PAYLOAD_DUMPER_DIR/payload_dumper.py" \
+            --help
+            
+
+      - name: Extract boot image from OTA
         id: ota
         shell: bash
         env:
           OTA_URL: ${{ inputs.ota_url }}
         run: |
           set -euo pipefail
-      
-          mkdir -p "$WORKSPACE/ota"
-      
-          cd "$WORKSPACE/ota"
-      
-          "$WORKSPACE/tools/payload-dumper-go" \
-            -p boot \
+
+          PAYLOAD_DUMPER_DIR="$WORKSPACE/tools/payload-dumper"
+          PAYLOAD_DUMPER_PYTHON="$PAYLOAD_DUMPER_DIR/.venv/bin/python"
+          BOOT_OUTPUT_DIR="$WORKSPACE/ota"
+
+          rm -rf "$BOOT_OUTPUT_DIR"
+          mkdir -p "$BOOT_OUTPUT_DIR"
+
+          "$PAYLOAD_DUMPER_PYTHON" \
+            "$PAYLOAD_DUMPER_DIR/payload_dumper.py" \
+            --partitions boot \
+            --output "$BOOT_OUTPUT_DIR" \
             "$OTA_URL"
-      
-          test -f boot.img
-      
-          echo "boot_img=$WORKSPACE/ota/boot.img" >> "$GITHUB_OUTPUT"
-      
-          ls -lh boot.img
+
+          BOOT_IMG="$BOOT_OUTPUT_DIR/boot.img"
+
+          if [ ! -s "$BOOT_IMG" ]; then
+            echo "::error::boot.img n'a pas été extrait"
+            find "$BOOT_OUTPUT_DIR" -maxdepth 2 -type f -ls || true
+            exit 1
+          fi
+
+          echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
+
+          ls -lh "$BOOT_IMG"
+          file "$BOOT_IMG"
           
       - name: Install MagiskBoot
         shell: bash
