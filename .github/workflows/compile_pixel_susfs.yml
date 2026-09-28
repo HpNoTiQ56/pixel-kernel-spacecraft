@@ -960,23 +960,53 @@ jobs:
           SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
         run: |
           set -euo pipefail
-      
+
+          #
+          # KernelSU-Next
+          #
           KSU_VERSION="$(
             git -C "$GKI_ROOT/KernelSU-Next" rev-list --count HEAD
           )"
-      
+
           KSU_VERSION=$((30000 + KSU_VERSION))
-      
-          SUSFS_VERSION="$(
-            git -C "$SUSFS_DIR" describe --tags --abbrev=0
-          )"
-      
+
+          #
+          # SUSFS
+          #
+          git -C "$SUSFS_DIR" fetch --tags >/dev/null 2>&1 || true
+
+          SUSFS_VERSION=""
+
+          # Priorité 1 : tag git
+          if SUSFS_VERSION="$(
+            git -C "$SUSFS_DIR" describe --tags --abbrev=0 2>/dev/null
+          )"; then
+            true
+          fi
+
+          # Priorité 2 : recherche d'une version dans les sources
+          if [ -z "$SUSFS_VERSION" ]; then
+            SUSFS_VERSION="$(
+              grep -RhoE 'v[0-9]+\.[0-9]+\.[0-9]+' "$SUSFS_DIR" \
+              | sort -Vu \
+              | tail -n1 \
+              || true
+            )"
+          fi
+
+          # Priorité 3 : fallback commit court
+          if [ -z "$SUSFS_VERSION" ]; then
+            SUSFS_VERSION="git-$(
+              git -C "$SUSFS_DIR" rev-parse --short HEAD
+            )"
+          fi
+
           echo "ksu_version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
           echo "susfs_version=$SUSFS_VERSION" >> "$GITHUB_OUTPUT"
-      
+
           echo "KSU_VERSION=$KSU_VERSION"
           echo "SUSFS_VERSION=$SUSFS_VERSION"
-    
+
       - name: Extract SPL from OTA metadata
         id: spl
         shell: bash
