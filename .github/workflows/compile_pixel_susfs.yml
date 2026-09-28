@@ -1036,6 +1036,44 @@ jobs:
           head -20 \
             "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
             
+      - name: Spoof /proc/config.gz with stock defconfig
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
+
+          KERNEL_MAKEFILE="$GKI_ROOT/kernel/Makefile"
+
+          test -f "$KERNEL_MAKEFILE"
+
+          test -s \
+            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
+
+          echo "=== Before ==="
+
+          grep -n \
+            'config_data:' \
+            "$KERNEL_MAKEFILE"
+
+          sed -i \
+            's#$(obj)/config_data: $(KCONFIG_CONFIG) FORCE#$(obj)/config_data: arch/arm64/configs/stock_defconfig FORCE#' \
+            "$KERNEL_MAKEFILE"
+
+          echo
+          echo "=== After ==="
+
+          grep -n \
+            'config_data:' \
+            "$KERNEL_MAKEFILE"
+
+          grep -q \
+            '$(obj)/config_data: arch/arm64/configs/stock_defconfig FORCE' \
+            "$KERNEL_MAKEFILE"
+
+          echo
+          echo "stock_defconfig spoof enabled"
+          
       - name: Build GKI from sources
         shell: bash
         env:
