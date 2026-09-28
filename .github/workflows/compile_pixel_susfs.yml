@@ -1,4 +1,4 @@
-name: Download latest Kernel Sources
+name: KSUNext+Susfs build latest Kernel Sources
 
 on:
   workflow_dispatch:
