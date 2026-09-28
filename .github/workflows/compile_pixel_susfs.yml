@@ -233,41 +233,83 @@ jobs:
         run: |
           set -euo pipefail
 
-          PAYLOAD_DUMPER_DIR="$WORKSPACE/tools/payload-dumper"
-          PAYLOAD_DUMPER_VENV="$PAYLOAD_DUMPER_DIR/.venv"
+          TOOLS_DIR="$WORKSPACE/tools"
+          UV_BIN="$TOOLS_DIR/uv"
+          PAYLOAD_VENV="$TOOLS_DIR/payload-dumper-venv"
 
-          mkdir -p "$WORKSPACE/tools"
+          mkdir -p "$TOOLS_DIR"
 
-          if [ ! -d "$PAYLOAD_DUMPER_DIR/.git" ]; then
-            rm -rf "$PAYLOAD_DUMPER_DIR"
+          echo "=== Installation de uv autonome ==="
 
-            git clone \
-              --depth 1 \
-              https://github.com/5ec1cff/payload-dumper.git \
-              "$PAYLOAD_DUMPER_DIR"
-          else
-            git -C "$PAYLOAD_DUMPER_DIR" pull --ff-only
+          if [ ! -x "$UV_BIN" ]; then
+            UV_INSTALL_DIR="$TOOLS_DIR/uv-install"
+
+            rm -rf "$UV_INSTALL_DIR"
+            mkdir -p "$UV_INSTALL_DIR"
+
+            curl \
+              --fail \
+              --location \
+              --silent \
+              --show-error \
+              "https://astral.sh/uv/install.sh" \
+              --output "$TOOLS_DIR/install-uv.sh"
+
+            env \
+              UV_INSTALL_DIR="$UV_INSTALL_DIR" \
+              UV_NO_MODIFY_PATH=1 \
+              sh "$TOOLS_DIR/install-uv.sh"
+
+            UV_FOUND="$(
+              find "$UV_INSTALL_DIR" \
+                -type f \
+                -name uv \
+                -perm -u+x \
+                -print \
+                -quit
+            )"
+
+            if [ -z "$UV_FOUND" ]; then
+              echo "::error::Le binaire uv n'a pas été installé."
+              find "$UV_INSTALL_DIR" -maxdepth 3 -type f -ls || true
+              exit 1
+            fi
+
+            cp "$UV_FOUND" "$UV_BIN"
+            chmod +x "$UV_BIN"
+
+            rm -f "$TOOLS_DIR/install-uv.sh"
+            rm -rf "$UV_INSTALL_DIR"
           fi
 
-          if [ ! -x "$PAYLOAD_DUMPER_VENV/bin/python" ]; then
-            python3 -m venv "$PAYLOAD_DUMPER_VENV"
+          "$UV_BIN" --version
+
+          echo
+          echo "=== Création de l'environnement Python isolé ==="
+
+          if [ ! -x "$PAYLOAD_VENV/bin/python" ]; then
+            rm -rf "$PAYLOAD_VENV"
+
+            "$UV_BIN" venv \
+              --python python3 \
+              "$PAYLOAD_VENV"
           fi
 
-          "$PAYLOAD_DUMPER_VENV/bin/python" \
-            -m pip install \
-            --upgrade pip setuptools wheel
+          echo
+          echo "=== Installation de payload-dumper ==="
 
-          "$PAYLOAD_DUMPER_VENV/bin/python" \
-            -m pip install \
-            -r "$PAYLOAD_DUMPER_DIR/requirements.txt"
+          "$UV_BIN" pip install \
+            --python "$PAYLOAD_VENV/bin/python" \
+            --upgrade \
+            "git+https://github.com/5ec1cff/payload-dumper.git"
 
-          echo "=== payload-dumper installé ==="
+          echo
+          echo "=== Vérification ==="
 
-          "$PAYLOAD_DUMPER_VENV/bin/python" \
-            "$PAYLOAD_DUMPER_DIR/payload_dumper.py" \
-            --help
-            
+          test -x "$PAYLOAD_VENV/bin/payload_dumper"
 
+          "$PAYLOAD_VENV/bin/payload_dumper" --help
+          
       - name: Extract boot image from OTA
         id: ota
         shell: bash
@@ -276,28 +318,51 @@ jobs:
         run: |
           set -euo pipefail
 
-          PAYLOAD_DUMPER_DIR="$WORKSPACE/tools/payload-dumper"
-          PAYLOAD_DUMPER_PYTHON="$PAYLOAD_DUMPER_DIR/.venv/bin/python"
+          PAYLOAD_DUMPER="$WORKSPACE/tools/payload-dumper-venv/bin/payload_dumper"
           BOOT_OUTPUT_DIR="$WORKSPACE/ota"
+
+          if [ ! -x "$PAYLOAD_DUMPER" ]; then
+            echo "::error::payload_dumper n'est pas installé : $PAYLOAD_DUMPER"
+            exit 1
+          fi
+
+          case "$OTA_URL" in
+            http://*|https://*)
+              ;;
+            *)
+              echo "::error::URL OTA invalide : $OTA_URL"
+              exit 1
+              ;;
+          esac
 
           rm -rf "$BOOT_OUTPUT_DIR"
           mkdir -p "$BOOT_OUTPUT_DIR"
 
-          "$PAYLOAD_DUMPER_PYTHON" \
-            "$PAYLOAD_DUMPER_DIR/payload_dumper.py" \
+          cd "$BOOT_OUTPUT_DIR"
+
+          echo "=== Extraction de boot depuis l'OTA distante ==="
+          echo "OTA : $OTA_URL"
+
+          "$PAYLOAD_DUMPER" \
             --partitions boot \
-            --output "$BOOT_OUTPUT_DIR" \
             "$OTA_URL"
 
           BOOT_IMG="$BOOT_OUTPUT_DIR/boot.img"
 
           if [ ! -s "$BOOT_IMG" ]; then
-            echo "::error::boot.img n'a pas été extrait"
-            find "$BOOT_OUTPUT_DIR" -maxdepth 2 -type f -ls || true
+            echo "::error::boot.img n'a pas été extrait dans $BOOT_OUTPUT_DIR"
+            find "$BOOT_OUTPUT_DIR" \
+              -maxdepth 3 \
+              -type f \
+              -ls \
+              || true
             exit 1
           fi
 
           echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "=== Boot stock extrait ==="
 
           ls -lh "$BOOT_IMG"
           file "$BOOT_IMG"
