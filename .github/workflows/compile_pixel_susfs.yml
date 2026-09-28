@@ -310,6 +310,23 @@ jobs:
 
           "$PAYLOAD_VENV/bin/payload_dumper" --help
           
+      - name: Install extract-ikconfig
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
+      
+          curl -L \
+            https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig \
+            -o "$GKI_ROOT/scripts/extract-ikconfig"
+      
+          chmod +x \
+            "$GKI_ROOT/scripts/extract-ikconfig"
+      
+          head -5 \
+            "$GKI_ROOT/scripts/extract-ikconfig"
+      
       - name: Extract boot image from OTA
         id: ota
         shell: bash
@@ -980,7 +997,59 @@ jobs:
             --batch \
             -p1 \
             < "$GITHUB_WORKSPACE/patches/0002-disable-protected-modules.patch"
-      
+
+      - name: Extract stock defconfig from boot.img
+        id: stockdefconfig
+        shell: bash
+        env:
+          BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
+
+          MAGISKBOOT="$WORKSPACE/tools/magiskboot"
+
+          rm -rf "$WORKSPACE/stockconfig"
+          mkdir -p "$WORKSPACE/stockconfig"
+
+          cd "$WORKSPACE/stockconfig"
+
+          echo "=== Extracting kernel from boot ==="
+          "$MAGISKBOOT" unpack "$BOOT_IMG"
+
+          test -f kernel
+
+          echo "=== Extracting stock config ==="
+          "$GKI_ROOT/scripts/extract-ikconfig" \
+            kernel \
+            > stock_defconfig
+
+          test -s stock_defconfig
+
+          echo "=== Preview ==="
+          head -20 stock_defconfig
+
+          mkdir -p \
+            "$GKI_ROOT/arch/arm64/configs"
+
+          cp \
+            stock_defconfig \
+            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
+
+          echo "stock_defconfig=$GKI_ROOT/arch/arm64/configs/stock_defconfig" \
+            >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "=== Verification ==="
+
+          grep -E \
+            '^CONFIG_IKCONFIG=|^CONFIG_IKCONFIG_PROC=' \
+            "$GKI_ROOT/arch/arm64/configs/stock_defconfig" \
+            || true
+
+          ls -lh \
+            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
+            
       - name: Build GKI from sources
         shell: bash
         env:
@@ -1005,7 +1074,10 @@ jobs:
 
           echo
           echo "=== Compilation GKI depuis les sources ==="
-
+          echo "KBUILD_BUILD_USER=$KBUILD_BUILD_USER"
+          echo "KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST"
+          echo "KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
+          
           time tools/bazel build \
             --config=spacecraft \
             --strategy=KernelBuild=local \
@@ -1067,41 +1139,35 @@ jobs:
 
           echo "KSU_VERSION=$KSU_VERSION"
           echo "SUSFS_VERSION=$SUSFS_VERSION"
-
-      - name: Extract SPL from OTA metadata
+      
+      - name: Extract SPL from boot image
         id: spl
         shell: bash
         env:
-          OTA_URL: ${{ inputs.ota_url }}
+          BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
         run: |
           set -euo pipefail
-
-          OTA_META="$WORKSPACE/ota/metadata"
-
-          curl -L \
-            "$OTA_URL" \
-            -o "$WORKSPACE/ota/ota.zip"
-
-          unzip -p \
-            "$WORKSPACE/ota/ota.zip" \
-            META-INF/com/android/metadata \
-            > "$OTA_META"
-
+      
           SPL="$(
-            grep '^post-security-patch-level=' "$OTA_META" \
-              | cut -d= -f2
+            strings "$BOOT_IMG" |
+            awk '
+              /com.android.build.boot.security_patch/ {
+                getline
+                print
+                exit
+              }
+            '
           )"
-
+      
           if [ -z "$SPL" ]; then
-            echo "::error::Impossible de récupérer le SPL"
-            cat "$OTA_META"
+            echo "::error::Unable to extract SPL from boot image"
             exit 1
           fi
-
+      
           echo "spl=$SPL" >> "$GITHUB_OUTPUT"
-
+      
           echo "SPL=$SPL"
-          
+
       - name: Repack boot image
         id: repack
         shell: bash
