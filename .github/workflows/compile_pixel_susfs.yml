@@ -945,33 +945,57 @@ jobs:
           SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
         run: |
           set -euo pipefail
-
-          KSU_VERSION="$(git -C "$GKI_ROOT/KernelSU-Next" rev-list --count HEAD)"
-          SUSFS_VERSION="$(git -C "$SUSFS_DIR" describe --tags --always)"
-
+      
+          KSU_VERSION="$(
+            git -C "$GKI_ROOT/KernelSU-Next" rev-list --count HEAD
+          )"
+      
+          KSU_VERSION=$((30000 + KSU_VERSION))
+      
+          SUSFS_VERSION="$(
+            git -C "$SUSFS_DIR" describe --tags --abbrev=0
+          )"
+      
           echo "ksu_version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
           echo "susfs_version=$SUSFS_VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Extract SPL
+      
+          echo "KSU_VERSION=$KSU_VERSION"
+          echo "SUSFS_VERSION=$SUSFS_VERSION"
+    
+      - name: Extract SPL from OTA metadata
         id: spl
         shell: bash
         env:
-          BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
+          OTA_URL: ${{ inputs.ota_url }}
         run: |
           set -euo pipefail
-      
-          MAGISKBOOT="$WORKSPACE/tools/magiskboot"
-      
-          mkdir -p "$WORKSPACE/spl"
-      
-          cd "$WORKSPACE/spl"
-      
-          "$MAGISKBOOT" unpack "$BOOT_IMG"
-      
-          ls -lah
-      
-          echo "spl=unknown" >> "$GITHUB_OUTPUT"
-    
+
+          OTA_META="$WORKSPACE/ota/metadata"
+
+          curl -L \
+            "$OTA_URL" \
+            -o "$WORKSPACE/ota/ota.zip"
+
+          unzip -p \
+            "$WORKSPACE/ota/ota.zip" \
+            META-INF/com/android/metadata \
+            > "$OTA_META"
+
+          SPL="$(
+            grep '^post-security-patch-level=' "$OTA_META" \
+              | cut -d= -f2
+          )"
+
+          if [ -z "$SPL" ]; then
+            echo "::error::Impossible de récupérer le SPL"
+            cat "$OTA_META"
+            exit 1
+          fi
+
+          echo "spl=$SPL" >> "$GITHUB_OUTPUT"
+
+          echo "SPL=$SPL"
+          
       - name: Repack boot image
         id: repack
         shell: bash
@@ -1000,7 +1024,7 @@ jobs:
 
           "$MAGISKBOOT" repack boot.img
 
-          FINAL_NAME="${SPL}_boot_KSU${KSU_VERSION}_susfs${SUSFS_VERSION}.img"
+          FINAL_NAME="${SPL}_boot_KSUNext_${KSU_VERSION}_SUSFS_${SUSFS_VERSION}.img"
 
           mv new-boot.img "$WORKSPACE/dist/$FINAL_NAME"
 
@@ -1011,5 +1035,5 @@ jobs:
       - name: Upload boot image
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.spl.outputs.spl }}_boot_KSU${{ steps.versions.outputs.ksu_version }}_susfs${{ steps.versions.outputs.susfs_version }}
+          name: ${{ steps.spl.outputs.spl }}_boot_KSUNext_${{ steps.versions.outputs.ksu_version }}_SUSFS_${{ steps.versions.outputs.susfs_version }}
           path: ${{ steps.repack.outputs.artifact }}
