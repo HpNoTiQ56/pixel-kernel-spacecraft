@@ -409,10 +409,11 @@ jobs:
               grep -a "Linux version" |
               head -1
           )"
-
+          
           RELEASE_SUFFIX="$(
-            echo "$FULL_VERSION" |
-              sed -n 's#.*Linux version [0-9.]*\\(-android[^ ]*\\).*#\\1#p'
+          strings "$BOOT_IMG" |
+          grep -aoE '\-android[^ )]+' |
+          head -1
           )"
 
           PREEMPT_LINE="$(
