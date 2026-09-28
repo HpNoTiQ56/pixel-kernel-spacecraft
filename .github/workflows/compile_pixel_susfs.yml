@@ -347,8 +347,8 @@ jobs:
             --partitions boot \
             "$OTA_URL"
 
-          BOOT_IMG="$BOOT_OUTPUT_DIR/boot.img"
-
+          BOOT_IMG="$BOOT_OUTPUT_DIR/output/boot.img"
+          
           if [ ! -s "$BOOT_IMG" ]; then
             echo "::error::boot.img n'a pas été extrait dans $BOOT_OUTPUT_DIR"
             find "$BOOT_OUTPUT_DIR" \
