@@ -379,7 +379,7 @@ jobs:
             cd "$WORKSPACE/tools"
       
             curl -L \
-              https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk-v30.7.apk \
+              https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk \
               -o magisk.apk
       
             unzip -o -j \
@@ -390,12 +390,12 @@ jobs:
             mv libmagiskboot.so magiskboot
       
             chmod +x magiskboot
-      
-            rm -f magisk.apk
           fi
       
-          "$WORKSPACE/tools/magiskboot"
-    
+          test -x "$WORKSPACE/tools/magiskboot"
+      
+          echo "MagiskBoot installé"
+          
       - name: Inspect extracted sources
         shell: bash
         run: |
