@@ -496,7 +496,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          KERNEL_PATCH_SOURCE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_kernel-${KERNEL_SERIES}.patch"
+          KERNEL_PATCH_SOURCE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-${KMI_STRING}.patch"
           KERNEL_PATCH_LOCAL="$GKI_ROOT/50_add_susfs_in_kernel-${KERNEL_SERIES}.patch"
 
           echo "=== Paramètres SUSFS ==="
