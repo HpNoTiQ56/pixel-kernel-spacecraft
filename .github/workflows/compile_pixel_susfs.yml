@@ -918,17 +918,12 @@ jobs:
       
           cd "$GKI_ROOT"
       
-          patch -p1 \
+          patch \
+            --forward \
+            --batch \
+            -p1 \
             < "$GITHUB_WORKSPACE/patches/0002-disable-protected-modules.patch"
-
-      - name: Verify protected modules disabled
-        shell: bash
-        env:
-          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-        run: |
-          grep -A5 "def get_gki_protected_modules_list" \
-            "$GKI_ROOT/modules.bzl"
-
+      
       - name: Build GKI from sources
         shell: bash
         env:
