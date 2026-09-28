@@ -7,7 +7,10 @@ on:
         description: "Lien du dossier Google Drive contenant kernels-*.tar.xz"
         required: true
         type: string
-
+      ota_url:
+        description: "URL OTA Google"
+        required: true
+        type: string
 jobs:
   download-and-extract:
 
@@ -224,7 +227,27 @@ jobs:
 
           echo "=== Archives conservées ==="
           ls -lh "$WORKSPACE/src"
+          
+      - name: Extract boot image from OTA
+        id: ota
+        shell: bash
+        env:
+          OTA_URL: ${{ inputs.ota_url }}
+        run: |
+          set -euo pipefail
 
+          mkdir -p "$WORKSPACE/ota"
+
+          cd "$WORKSPACE/ota"
+
+          python payload_dumper.py \
+            --partition boot \
+            "$OTA_URL"
+
+          test -f boot.img
+
+          echo "boot_img=$WORKSPACE/ota/boot.img" >> "$GITHUB_OUTPUT"
+          
       - name: Extract kernel sources
         id: extract
         shell: bash
@@ -765,3 +788,78 @@ jobs:
             --//build/kernel/kleaf:use_prebuilt_gki=false \
             --//common:kernel_package_use_prebuilt_kernel=false \
             //common/gki:kernel_aarch64
+
+      - name: Gather versions
+        id: versions
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+          SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
+        run: |
+          set -euo pipefail
+
+          KSU_VERSION="$(git -C "$GKI_ROOT/KernelSU-Next" rev-list --count HEAD)"
+          SUSFS_VERSION="$(git -C "$SUSFS_DIR" describe --tags --always)"
+
+          echo "ksu_version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
+          echo "susfs_version=$SUSFS_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Extract SPL
+        id: spl
+        shell: bash
+        env:
+          BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
+        run: |
+          set -euo pipefail
+
+          mkdir unpack
+          cd unpack
+
+          magiskboot unpack "$BOOT_IMG"
+
+          SPL="$(
+            strings kernel 2>/dev/null |
+            grep -m1 -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}'
+          )"
+
+          echo "spl=$SPL" >> "$GITHUB_OUTPUT"
+
+      - name: Repack boot image
+        id: repack
+        shell: bash
+        env:
+          BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
+          KSU_VERSION: ${{ steps.versions.outputs.ksu_version }}
+          SUSFS_VERSION: ${{ steps.versions.outputs.susfs_version }}
+          SPL: ${{ steps.spl.outputs.spl }}
+          KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORKSPACE/dist/repack"
+
+          cd "$WORKSPACE/dist/repack"
+
+          cp "$BOOT_IMG" boot.img
+
+          magiskboot unpack boot.img
+
+          cp \
+            "$KERNEL_ROOT/bazel-bin/common/gki/kernel_aarch64/Image.lz4" \
+            kernel
+
+          magiskboot repack boot.img
+
+          FINAL_NAME="${SPL}_boot_KSU${KSU_VERSION}_susfs${SUSFS_VERSION}.img"
+
+          mv new-boot.img "$WORKSPACE/dist/$FINAL_NAME"
+
+          echo "artifact=$WORKSPACE/dist/$FINAL_NAME" >> "$GITHUB_OUTPUT"
+
+          ls -lh "$WORKSPACE/dist/$FINAL_NAME"
+          
+      - name: Upload boot image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.spl.outputs.spl }}_boot_KSU${{ steps.versions.outputs.ksu_version }}_susfs${{ steps.versions.outputs.susfs_version }}
+          path: ${{ steps.repack.outputs.artifact }}
