@@ -1,6 +1,8 @@
 name: Build OTA + Publish Custota
 
 on:
+  workflow_dispatch:
+  
   workflow_run:
     workflows:
       - "Build Kernel"
@@ -93,29 +95,35 @@ jobs:
 
       - name: Restore signing keys
         shell: bash
+        env:
+          AVB_KEY_B64: ${{ secrets.AVB_KEY_B64 }}
+          OTA_KEY_B64: ${{ secrets.OTA_KEY_B64 }}
+          OTA_CRT_B64: ${{ secrets.OTA_CRT_B64 }}
+          AVB_PASS: ${{ secrets.AVB_PASS }}
+          OTA_PASS: ${{ secrets.OTA_PASS }}
         run: |
           set -euo pipefail
-
+      
           mkdir -p "$WORKSPACE/keys"
-
-          echo "${{ secrets.AVB_KEY_B64 }}" \
+      
+          printf '%s' "$AVB_KEY_B64" \
             | base64 -d \
             > "$WORKSPACE/keys/avb.key"
-
-          echo "${{ secrets.OTA_KEY_B64 }}" \
+      
+          printf '%s' "$OTA_KEY_B64" \
             | base64 -d \
             > "$WORKSPACE/keys/ota.key"
-
-          echo "${{ secrets.OTA_CRT_B64 }}" \
+      
+          printf '%s' "$OTA_CRT_B64" \
             | base64 -d \
             > "$WORKSPACE/keys/ota.crt"
-
-          printf '%s' "${{ secrets.AVB_PASS }}" \
+      
+          printf '%s' "$AVB_PASS" \
             > "$WORKSPACE/keys/avb.pass"
-
-          printf '%s' "${{ secrets.OTA_PASS }}" \
+      
+          printf '%s' "$OTA_PASS" \
             > "$WORKSPACE/keys/ota.pass"
-
+      
           chmod 600 "$WORKSPACE/keys/"*
 
       - name: Install avbroot
