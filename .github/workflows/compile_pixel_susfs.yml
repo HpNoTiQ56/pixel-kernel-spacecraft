@@ -1226,9 +1226,36 @@ jobs:
           echo "artifact=$WORKSPACE/dist/$FINAL_NAME" >> "$GITHUB_OUTPUT"
 
           ls -lh "$WORKSPACE/dist/$FINAL_NAME"
+
+      - name: Save build metadata
+        shell: bash
+        env:
+          OTA_URL: ${{ inputs.ota_url }}
+          SPL: ${{ steps.spl.outputs.spl }}
+          KSU_VERSION: ${{ steps.versions.outputs.ksu_version }}
+          SUSFS_VERSION: ${{ steps.versions.outputs.susfs_version }}
+          ARTIFACT: ${{ steps.repack.outputs.artifact }}
+        run: |
+          set -euo pipefail
+
+          BASENAME="$(basename "$ARTIFACT")"
+
+          cat > "$WORKSPACE/dist/build-metadata.json" <<EOF
+          {
+            "ota_url": "$OTA_URL",
+            "spl": "$SPL",
+            "ksu_version": "$KSU_VERSION",
+            "susfs_version": "$SUSFS_VERSION",
+            "boot_filename": "$BASENAME"
+          }
+          EOF
+
+          cat "$WORKSPACE/dist/build-metadata.json"
           
       - name: Upload boot image
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.spl.outputs.spl }}_boot_KSUNext_${{ steps.versions.outputs.ksu_version }}_SUSFS_${{ steps.versions.outputs.susfs_version }}
-          path: ${{ steps.repack.outputs.artifact }}
+          path: |
+            ${{ steps.repack.outputs.artifact }}
+            /home/aurelien/workspace/dist/build-metadata.json
