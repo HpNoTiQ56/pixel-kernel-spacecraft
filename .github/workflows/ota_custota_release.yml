@@ -190,24 +190,88 @@ jobs:
 
       - name: Install avbroot
         shell: bash
+        env:
+          AVBROOT_VERSION: "3.34.1"
         run: |
           set -euo pipefail
 
-          mkdir -p "$WORKSPACE/tools"
+          TOOLS_DIR="$WORKSPACE/tools"
+          AVBROOT_BIN="$TOOLS_DIR/avbroot"
+          AVBROOT_ZIP="$TOOLS_DIR/avbroot.zip"
 
-          if [ ! -x "$WORKSPACE/tools/avbroot" ]; then
+          mkdir -p "$TOOLS_DIR"
 
-            curl -L \
-              https://github.com/chenxiaolong/avbroot/releases/download/v3.33.0/avbroot-3.33.0-x86_64-unknown-linux-musl.tar.gz \
-              -o "$WORKSPACE/tools/avbroot.tar.gz"
-
-            tar -xf \
-              "$WORKSPACE/tools/avbroot.tar.gz" \
-              -C "$WORKSPACE/tools"
-
-            chmod +x \
-              "$WORKSPACE/tools/avbroot"
+          if [ -x "$AVBROOT_BIN" ]; then
+            echo "=== avbroot déjà installé ==="
+            "$AVBROOT_BIN" --version
+            exit 0
           fi
+
+          ARCH="$(uname -m)"
+
+          case "$ARCH" in
+            x86_64)
+              TARGET="x86_64-unknown-linux-gnu"
+              ;;
+            aarch64|arm64)
+              TARGET="aarch64-unknown-linux-gnu"
+              ;;
+            *)
+              echo "::error::Architecture non supportée : $ARCH"
+              exit 1
+              ;;
+          esac
+
+          DOWNLOAD_URL="https://github.com/chenxiaolong/avbroot/releases/download/v${AVBROOT_VERSION}/avbroot-${AVBROOT_VERSION}-${TARGET}.zip"
+
+          echo "=== Téléchargement avbroot ==="
+          echo "Version : $AVBROOT_VERSION"
+          echo "Cible   : $TARGET"
+          echo "URL     : $DOWNLOAD_URL"
+
+          rm -f "$AVBROOT_ZIP"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --show-error \
+            "$DOWNLOAD_URL" \
+            --output "$AVBROOT_ZIP"
+
+          echo
+          echo "=== Archive téléchargée ==="
+
+          ls -lh "$AVBROOT_ZIP"
+          file "$AVBROOT_ZIP"
+
+          unzip -t "$AVBROOT_ZIP"
+
+          rm -f "$AVBROOT_BIN"
+
+          unzip -o \
+            "$AVBROOT_ZIP" \
+            -d "$TOOLS_DIR"
+
+          if [ ! -f "$AVBROOT_BIN" ]; then
+            echo "::error::Binaire avbroot introuvable après extraction"
+
+            find "$TOOLS_DIR" \
+              -maxdepth 3 \
+              -type f \
+              -printf '%p\n' \
+              | sort
+
+            exit 1
+          fi
+
+          chmod 700 "$AVBROOT_BIN"
+
+          echo
+          echo "=== Version installée ==="
+
+          "$AVBROOT_BIN" --version
 
       - name: Patch OTA
         shell: bash
