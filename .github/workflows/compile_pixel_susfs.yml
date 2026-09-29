@@ -1263,10 +1263,12 @@ jobs:
       
           cat "$WORKSPACE/dist/build-metadata.json"
           
-      - name: Upload boot image
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.spl.outputs.spl }}_boot_KSUNext_${{ steps.versions.outputs.ksu_version }}_SUSFS_${{ steps.versions.outputs.susfs_version }}
+          name: kernel-build
           path: |
             ${{ steps.repack.outputs.artifact }}
             /home/aurelien/workspace/dist/build-metadata.json
+          if-no-files-found: error
+          retention-days: 30
