@@ -2,13 +2,13 @@ name: Build OTA + Publish Custota
 
 on:
   workflow_dispatch:
-  
+
   workflow_run:
     workflows:
       - "Build Kernel"
     types:
       - completed
-
+      
 permissions:
   contents: write
   actions: read
@@ -18,7 +18,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
-      
+
     runs-on:
       - self-hosted
       - Linux
@@ -32,12 +32,71 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download build artifact
+      - name: Download build artifact from triggering run
+        if: github.event_name == 'workflow_run'
         uses: dawidd6/action-download-artifact@v6
         with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           run_id: ${{ github.event.workflow_run.id }}
+          name: kernel-build
           path: ${{ env.WORKSPACE }}/custota
 
+      - name: Download latest successful build artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: compile_pixel_susfs.yml
+          workflow_conclusion: success
+          branch: main
+          name: kernel-build
+          path: ${{ env.WORKSPACE }}/custota
+
+      - name: Verify downloaded build artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+      
+          echo "=== Contenu téléchargé ==="
+          find "$WORKSPACE/custota" \
+            -maxdepth 3 \
+            -type f \
+            -printf '%p\n' \
+            | sort
+      
+          METADATA="$(
+            find "$WORKSPACE/custota" \
+              -type f \
+              -name 'build-metadata.json' \
+              -print \
+              -quit
+          )"
+      
+          BOOT_IMG="$(
+            find "$WORKSPACE/custota" \
+              -type f \
+              -name '*_boot_KSUNext_*_SUSFS_*.img' \
+              -print \
+              -*uit
+          )"
+      
+          if [ -z "$METADATA" ] || [ ! -s "$METADATA" ]; then
+       *    echo "::error::build-metadata.*son introuvable dans l'artifact"
+       *    exit 1
+          fi
+      
+          if [ -z "$BOOT_IMG" ] || [ ! -s "$BOOT_IMG" ];*then
+            echo "::error::Image bo*t KernelSU-Next introuvable dans l*artifact"
+            exit 1
+          fi
+      
+         *echo
+          echo "Metadata : $METADAT*"
+          echo "Boot     : $BOOT_IMG"
+      *    echo
+          echo "=== Métadonnées*==="
+          jq . "$METADATA"
+    
       - name: Locate files
         id: files
         shell: bash
