@@ -1,0 +1,229 @@
+name: Build OTA + Publish Custota
+
+on:
+  workflow_run:
+    workflows:
+      - "Build Kernel"
+    types:
+      - completed
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  ota-release:
+    if: >
+      github.event.workflow_run.conclusion == 'success'
+
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - android-worker
+
+    env:
+      WORKSPACE: /home/aurelien/workspace
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          path: ${{ env.WORKSPACE }}/custota
+
+      - name: Locate files
+        id: files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BOOT_IMG="$(
+            find "$WORKSPACE/custota" \
+              -type f \
+              -name "*.img" \
+              | head -n1
+          )"
+
+          META_JSON="$(
+            find "$WORKSPACE/custota" \
+              -type f \
+              -name "build-metadata.json" \
+              | head -n1
+          )"
+
+          test -f "$BOOT_IMG"
+          test -f "$META_JSON"
+
+          echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
+          echo "meta_json=$META_JSON" >> "$GITHUB_OUTPUT"
+
+      - name: Read metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          META="${{ steps.files.outputs.meta_json }}"
+
+          OTA_URL="$(jq -r '.ota_url' "$META")"
+          SPL="$(jq -r '.spl' "$META")"
+          KSU_VERSION="$(jq -r '.ksu_version' "$META")"
+          SUSFS_VERSION="$(jq -r '.susfs_version' "$META")"
+
+          echo "ota_url=$OTA_URL" >> "$GITHUB_OUTPUT"
+          echo "spl=$SPL" >> "$GITHUB_OUTPUT"
+          echo "ksu_version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
+          echo "susfs_version=$SUSFS_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Download OTA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORKSPACE/ota"
+
+          curl \
+            -L \
+            "${{ steps.meta.outputs.ota_url }}" \
+            -o "$WORKSPACE/ota/stock.zip"
+
+      - name: Restore signing keys
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORKSPACE/keys"
+
+          echo "${{ secrets.AVB_KEY_B64 }}" \
+            | base64 -d \
+            > "$WORKSPACE/keys/avb.key"
+
+          echo "${{ secrets.OTA_KEY_B64 }}" \
+            | base64 -d \
+            > "$WORKSPACE/keys/ota.key"
+
+          echo "${{ secrets.OTA_CRT_B64 }}" \
+            | base64 -d \
+            > "$WORKSPACE/keys/ota.crt"
+
+          printf '%s' "${{ secrets.AVB_PASS }}" \
+            > "$WORKSPACE/keys/avb.pass"
+
+          printf '%s' "${{ secrets.OTA_PASS }}" \
+            > "$WORKSPACE/keys/ota.pass"
+
+          chmod 600 "$WORKSPACE/keys/"*
+
+      - name: Install avbroot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORKSPACE/tools"
+
+          if [ ! -x "$WORKSPACE/tools/avbroot" ]; then
+
+            curl -L \
+              https://github.com/chenxiaolong/avbroot/releases/download/v3.33.0/avbroot-3.33.0-x86_64-unknown-linux-musl.tar.gz \
+              -o "$WORKSPACE/tools/avbroot.tar.gz"
+
+            tar -xf \
+              "$WORKSPACE/tools/avbroot.tar.gz" \
+              -C "$WORKSPACE/tools"
+
+            chmod +x \
+              "$WORKSPACE/tools/avbroot"
+          fi
+
+      - name: Patch OTA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$WORKSPACE/release"
+
+          "$WORKSPACE/tools/avbroot" ota patch \
+            --input "$WORKSPACE/ota/stock.zip" \
+            --output "$WORKSPACE/release/ota-signed.zip" \
+            --key-avb "$WORKSPACE/keys/avb.key" \
+            --key-ota "$WORKSPACE/keys/ota.key" \
+            --cert-ota "$WORKSPACE/keys/ota.crt" \
+            --pass-avb-file "$WORKSPACE/keys/avb.pass" \
+            --pass-ota-file "$WORKSPACE/keys/ota.pass" \
+            --prepatched "${{ steps.files.outputs.boot_img }}"
+
+      - name: Generate SHA256
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SHA256="$(
+            sha256sum "$WORKSPACE/release/ota-signed.zip" \
+            | awk '{print $1}'
+          )"
+
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          
+      - name: Generate Custota version
+        id: buildver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KSU="${{ steps.meta.outputs.ksu_version }}"
+
+          SUSFS="$(
+            echo '${{ steps.meta.outputs.susfs_version }}' |
+            sed 's/^v//' |
+            tr -d '.'
+          )"
+
+          REV="$(
+            echo '${{ steps.meta.outputs.build_revision }}' |
+            cut -c9-12
+          )"
+
+          CUSTOTA_VERSION_CODE="${KSU}${SUSFS}${REV}"
+
+          echo "custota_version=$CUSTOTA_VERSION_CODE" \
+            >> "$GITHUB_OUTPUT"
+
+          echo "CUSTOTA_VERSION_CODE=$CUSTOTA_VERSION_CODE"
+          
+      - name: Generate Custota JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.meta.outputs.spl }}_KSUNext_${{ steps.meta.outputs.ksu_version }}_SUSFS_${{ steps.meta.outputs.susfs_version }}"
+
+          cat > "$WORKSPACE/release/latest.json" <<EOF
+          {
+            "version": "${{ steps.meta.outputs.spl }}-r${{ steps.meta.outputs.build_revision }}",
+            "versionCode": ${{ steps.buildver.outputs.custota_version }},
+            "zipUrl": "https://github.com/${{ github.repository }}/releases/download/${TAG}/ota-signed.zip",
+            "zipSha256": "${{ steps.sha.outputs.sha256 }}",
+            "changelog": "KernelSU Next ${{ steps.meta.outputs.ksu_version }} + SUSFS ${{ steps.meta.outputs.susfs_version }}"
+          }
+          EOF
+          
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.meta.outputs.spl }}_KSUNext_${{ steps.meta.outputs.ksu_version }}_SUSFS_${{ steps.meta.outputs.susfs_version }}"
+
+          gh release create "$TAG" \
+            "$WORKSPACE/release/ota-signed.zip" \
+            "$WORKSPACE/release/latest.json" \
+            "${{ steps.files.outputs.boot_img }}" \
+            --title "$TAG" \
+            --latest
