@@ -1,5 +1,4 @@
-name: KSUNext+Susfs build latest Kernel Sources
-
+name: Build Kernel
 on:
   workflow_dispatch:
     inputs:
