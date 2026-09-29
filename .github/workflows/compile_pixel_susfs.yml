@@ -1237,19 +1237,30 @@ jobs:
           ARTIFACT: ${{ steps.repack.outputs.artifact }}
         run: |
           set -euo pipefail
-
+      
           BASENAME="$(basename "$ARTIFACT")"
-
+      
+          BUILD_REVISION="$(date +%Y%m%d%H%M)"
+      
+          VERSION_CODE="$(
+            strings "$ARTIFACT" |
+            grep -a "user/release-keys" |
+            head -1 |
+            sed -n 's#.*\/\([0-9]\+\):user/release-keys#\1#p'
+          )"
+      
           cat > "$WORKSPACE/dist/build-metadata.json" <<EOF
           {
             "ota_url": "$OTA_URL",
             "spl": "$SPL",
+            "version_code": "$VERSION_CODE",
             "ksu_version": "$KSU_VERSION",
             "susfs_version": "$SUSFS_VERSION",
+            "build_revision": "$BUILD_REVISION",
             "boot_filename": "$BASENAME"
           }
           EOF
-
+      
           cat "$WORKSPACE/dist/build-metadata.json"
           
       - name: Upload boot image
