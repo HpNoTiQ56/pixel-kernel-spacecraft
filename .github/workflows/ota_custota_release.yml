@@ -56,14 +56,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-      
+
           echo "=== Contenu téléchargé ==="
+
           find "$WORKSPACE/custota" \
             -maxdepth 3 \
             -type f \
             -printf '%p\n' \
             | sort
-      
+
           METADATA="$(
             find "$WORKSPACE/custota" \
               -type f \
@@ -71,30 +72,31 @@ jobs:
               -print \
               -quit
           )"
-      
+
           BOOT_IMG="$(
             find "$WORKSPACE/custota" \
               -type f \
               -name '*_boot_KSUNext_*_SUSFS_*.img' \
               -print \
-              -*uit
+              -quit
           )"
-      
+
           if [ -z "$METADATA" ] || [ ! -s "$METADATA" ]; then
-       *    echo "::error::build-metadata.*son introuvable dans l'artifact"
-       *    exit 1
-          fi
-      
-          if [ -z "$BOOT_IMG" ] || [ ! -s "$BOOT_IMG" ];*then
-            echo "::error::Image bo*t KernelSU-Next introuvable dans l*artifact"
+            echo "::error::build-metadata.json introuvable dans l'artifact"
             exit 1
           fi
-      
-         *echo
-          echo "Metadata : $METADAT*"
+
+          if [ -z "$BOOT_IMG" ] || [ ! -s "$BOOT_IMG" ]; then
+            echo "::error::Image boot KernelSU-Next introuvable dans l'artifact"
+            exit 1
+          fi
+
+          echo
+          echo "Metadata : $METADATA"
           echo "Boot     : $BOOT_IMG"
-      *    echo
-          echo "=== Métadonnées*==="
+
+          echo
+          echo "=== Métadonnées ==="
           jq . "$METADATA"
     
       - name: Locate files
