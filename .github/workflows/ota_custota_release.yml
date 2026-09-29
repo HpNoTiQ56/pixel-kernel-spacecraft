@@ -202,7 +202,7 @@ jobs:
 
           TAG="${{ steps.meta.outputs.spl }}_KSUNext_${{ steps.meta.outputs.ksu_version }}_SUSFS_${{ steps.meta.outputs.susfs_version }}"
 
-          cat > "$WORKSPACE/release/latest.json" <<EOF
+          cat > "$WORKSPACE/release/grizzly.json" <<EOF
           {
             "version": "${{ steps.meta.outputs.spl }}-r${{ steps.meta.outputs.build_revision }}",
             "versionCode": ${{ steps.buildver.outputs.custota_version }},
@@ -223,7 +223,7 @@ jobs:
 
           gh release create "$TAG" \
             "$WORKSPACE/release/ota-signed.zip" \
-            "$WORKSPACE/release/latest.json" \
+            "$WORKSPACE/release/grizzly.json" \
             "${{ steps.files.outputs.boot_img }}" \
             --title "$TAG" \
             --latest
