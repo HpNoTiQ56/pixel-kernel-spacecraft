@@ -738,45 +738,45 @@ jobs:
           echo
           echo "Timestamp stock injecté correctement."
 
-      - name: Install KernelSU-Next dev-susfs
-        shell: bash
-        env:
-          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-        run: |
-          set -euo pipefail
+      # - name: Install KernelSU-Next dev-susfs
+      #   shell: bash
+      #   env:
+      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+      #   run: |
+      #     set -euo pipefail
 
-          cd "$GKI_ROOT"
+      #     cd "$GKI_ROOT"
 
-          curl -LSs \
-            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
-            | bash -s dev-susfs
+      #     curl -LSs \
+      #       "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
+      #       | bash -s dev-susfs
             
-      - name: Verify KernelSU-Next installation
-        shell: bash
-        env:
-          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-        run: |
-          set -euo pipefail
+      # - name: Verify KernelSU-Next installation
+      #   shell: bash
+      #   env:
+      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+      #   run: |
+      #     set -euo pipefail
 
-          cd "$GKI_ROOT"
+      #     cd "$GKI_ROOT"
 
-          echo "=== Branche ==="
-          git -C KernelSU-Next branch --show-current || true
+      #     echo "=== Branche ==="
+      #     git -C KernelSU-Next branch --show-current || true
 
-          echo
-          echo "=== Commit ==="
-          git -C KernelSU-Next log -1 --oneline || true
+      #     echo
+      #     echo "=== Commit ==="
+      #     git -C KernelSU-Next log -1 --oneline || true
 
-          echo
-          echo "=== Driver ==="
-          ls -lah drivers/kernelsu
+      #     echo
+      #     echo "=== Driver ==="
+      #     ls -lah drivers/kernelsu
 
-          echo
-          echo "=== Kconfig ==="
-          grep -R "KernelSU" . | head -20 || true
+      #     echo
+      #     echo "=== Kconfig ==="
+      #     grep -R "KernelSU" . | head -20 || true
 
-          echo
-          echo "=== Installation OK ==="
+      #     echo
+      #     echo "=== Installation OK ==="
 
       # - name: Clone matching SUSFS branch
       #   id: susfs
@@ -1209,10 +1209,10 @@ jobs:
           pwd
 
           echo
-          echo "=== KernelSU-Next ==="
-          git -C common/gki/KernelSU-Next branch --show-current
-          git -C common/gki/KernelSU-Next log -1 --oneline
-          git -C common/gki/KernelSU-Next describe --tags --always
+          # echo "=== KernelSU-Next ==="
+          # git -C common/gki/KernelSU-Next branch --show-current
+          # git -C common/gki/KernelSU-Next log -1 --oneline
+          # git -C common/gki/KernelSU-Next describe --tags --always
 
           echo
           echo "=== Métadonnées de compilation ==="
@@ -1355,27 +1355,15 @@ jobs:
 
       #     echo "KSU_VERSION=$KSU_VERSION"
       #     echo "SUSFS_VERSION=$SUSFS_VERSION"
-      - name: Gather versions (without susfs)
+      - name: Gather versions
         id: versions
         shell: bash
-        env:
-          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
-
-          KSU_VERSION="$(
-            git -C "$GKI_ROOT/KernelSU-Next" rev-list --count HEAD
-          )"
-
-          KSU_VERSION=$((30000 + KSU_VERSION))
-
-          SUSFS_VERSION="none"
-
-          echo "ksu_version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
-          echo "susfs_version=$SUSFS_VERSION" >> "$GITHUB_OUTPUT"
-
-          echo "KSU_VERSION=$KSU_VERSION"
-          echo "SUSFS_VERSION=$SUSFS_VERSION"
+      
+          echo "ksu_version=none" >> "$GITHUB_OUTPUT"
+          echo "susfs_version=none" >> "$GITHUB_OUTPUT"
+    
       - name: Extract SPL from boot image
         id: spl
         shell: bash
