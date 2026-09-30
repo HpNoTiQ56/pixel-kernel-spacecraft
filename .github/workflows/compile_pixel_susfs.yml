@@ -1086,20 +1086,20 @@ jobs:
       #     echo
       #     echo "=== Intégration SUSFS kernel validée ==="
           
-      # - name: Disable protected modules
-      #   shell: bash
-      #   env:
-      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-      #   run: |
-      #     set -euo pipefail
+      - name: Disable protected modules
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
       
-      #     cd "$GKI_ROOT"
+          cd "$GKI_ROOT"
       
-      #     patch \
-      #       --forward \
-      #       --batch \
-      #       -p1 \
-      #       < "$GITHUB_WORKSPACE/patches/0002-disable-protected-modules.patch"
+          patch \
+            --forward \
+            --batch \
+            -p1 \
+            < "$GITHUB_WORKSPACE/patches/0002-disable-protected-modules.patch"
 
       # - name: Extract stock defconfig from boot.img
       #   id: stockdefconfig
