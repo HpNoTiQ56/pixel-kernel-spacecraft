@@ -420,34 +420,65 @@ jobs:
         run: |
           set -euo pipefail
 
+          test -s "$BOOT_IMG"
+
           FULL_VERSION="$(
-            strings "$BOOT_IMG" |
-              grep -a "Linux version" |
-              head -1
+            strings "$BOOT_IMG" \
+              | grep -a -m1 'Linux version'
           )"
-          
+
           RELEASE_SUFFIX="$(
-          strings "$BOOT_IMG" |
-          grep -aoE '\-android[^ )]+' |
-          head -1
+            printf '%s\n' "$FULL_VERSION" \
+              | grep -aoE -- '-android[^ )]+'
           )"
 
           PREEMPT_LINE="$(
-            strings "$BOOT_IMG" |
-              grep -a '#1 SMP PREEMPT' |
-              head -1
+            strings "$BOOT_IMG" \
+              | grep -a -m1 '^#1 SMP PREEMPT '
           )"
 
           BUILD_TIMESTAMP="$(
-            echo "$PREEMPT_LINE" |
-              sed 's/^#1 SMP PREEMPT //'
+            printf '%s\n' "$PREEMPT_LINE" \
+              | sed 's/^#1 SMP PREEMPT //'
           )"
 
-          echo "release_suffix=$RELEASE_SUFFIX" >> "$GITHUB_OUTPUT"
-          echo "build_timestamp=$BUILD_TIMESTAMP" >> "$GITHUB_OUTPUT"
+          SOURCE_DATE_EPOCH="$(
+            date \
+              --utc \
+              --date="$BUILD_TIMESTAMP" \
+              +%s
+          )"
 
+          if [ -z "$RELEASE_SUFFIX" ]; then
+            echo "::error::Suffixe kernel stock introuvable"
+            echo "FULL_VERSION=$FULL_VERSION"
+            exit 1
+          fi
+
+          if [ -z "$BUILD_TIMESTAMP" ]; then
+            echo "::error::Timestamp kernel stock introuvable"
+            exit 1
+          fi
+
+          case "$BUILD_TIMESTAMP" in
+            *" 1970")
+              echo "::error::Le timestamp stock extrait vaut déjà 1970"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "release_suffix=$RELEASE_SUFFIX"
+            echo "build_timestamp=$BUILD_TIMESTAMP"
+            echo "source_date_epoch=$SOURCE_DATE_EPOCH"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "FULL_VERSION=$FULL_VERSION"
           echo "RELEASE_SUFFIX=$RELEASE_SUFFIX"
+          echo "PREEMPT_LINE=$PREEMPT_LINE"
           echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP"
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+          
 
       - name: Extract kernel sources
         id: extract
@@ -1074,17 +1105,28 @@ jobs:
           echo "stock_defconfig spoof enabled"
           
       - name: Build GKI from sources
+        id: build
         shell: bash
         env:
           KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
           KBUILD_BUILD_USER: kleaf
           KBUILD_BUILD_HOST: build-host
           KBUILD_BUILD_TIMESTAMP: ${{ steps.stockkernel.outputs.build_timestamp }}
-          
+          SOURCE_DATE_EPOCH: ${{ steps.stockkernel.outputs.source_date_epoch }}
         run: |
           set -euo pipefail
 
           cd "$KERNEL_ROOT"
+
+          if [ -z "$KBUILD_BUILD_TIMESTAMP" ]; then
+            echo "::error::KBUILD_BUILD_TIMESTAMP est vide"
+            exit 1
+          fi
+
+          if [ -z "$SOURCE_DATE_EPOCH" ]; then
+            echo "::error::SOURCE_DATE_EPOCH est vide"
+            exit 1
+          fi
 
           echo "=== Racine Spacecraft ==="
           pwd
@@ -1096,18 +1138,79 @@ jobs:
           git -C common/gki/KernelSU-Next describe --tags --always
 
           echo
+          echo "=== Métadonnées transmises à Bazel ==="
+          printf 'KBUILD_BUILD_USER=<%s>\n' "$KBUILD_BUILD_USER"
+          printf 'KBUILD_BUILD_HOST=<%s>\n' "$KBUILD_BUILD_HOST"
+          printf 'KBUILD_BUILD_TIMESTAMP=<%s>\n' "$KBUILD_BUILD_TIMESTAMP"
+          printf 'SOURCE_DATE_EPOCH=<%s>\n' "$SOURCE_DATE_EPOCH"
+
+          echo
           echo "=== Compilation GKI depuis les sources ==="
-          echo "KBUILD_BUILD_USER=$KBUILD_BUILD_USER"
-          echo "KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST"
-          echo "KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
-          
+
           time tools/bazel build \
             --config=spacecraft \
             --strategy=KernelBuild=local \
+            "--action_env=KBUILD_BUILD_USER=$KBUILD_BUILD_USER" \
+            "--action_env=KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST" \
+            "--action_env=KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP" \
+            "--action_env=SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --//build/kernel/kleaf:use_prebuilt_gki=false \
             --//common:kernel_package_use_prebuilt_kernel=false \
             //common/gki:kernel_aarch64
+            
+      - name: Verify compiled kernel metadata
+        shell: bash
+        env:
+          KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+          EXPECTED_TIMESTAMP: ${{ steps.stockkernel.outputs.build_timestamp }}
+          EXPECTED_RELEASE_SUFFIX: ${{ steps.stockkernel.outputs.release_suffix }}
+        run: |
+          set -euo pipefail
 
+          IMAGE="$KERNEL_ROOT/bazel-bin/common/gki/kernel_aarch64/Image"
+          VMLINUX="$KERNEL_ROOT/bazel-bin/common/gki/kernel_aarch64/vmlinux"
+
+          test -s "$IMAGE"
+          test -s "$VMLINUX"
+
+          LINUX_VERSION="$(
+            strings "$VMLINUX" \
+              | grep -a -m1 '^Linux version '
+          )"
+
+          PREEMPT_LINE="$(
+            strings "$VMLINUX" \
+              | grep -a -m1 '^#1 SMP PREEMPT '
+          )"
+
+          echo "=== Métadonnées du kernel compilé ==="
+          echo "$LINUX_VERSION"
+          echo "$PREEMPT_LINE"
+
+          if ! grep -Fq "$EXPECTED_RELEASE_SUFFIX" <<< "$LINUX_VERSION"; then
+            echo "::error::Le suffixe kernel stock n'est pas présent"
+            echo "Attendu : $EXPECTED_RELEASE_SUFFIX"
+            exit 1
+          fi
+
+          if ! grep -Fq "(kleaf@build-host)" <<< "$LINUX_VERSION"; then
+            echo "::error::Le couple kleaf@build-host n'est pas présent"
+            exit 1
+          fi
+
+          if ! grep -Fq "$EXPECTED_TIMESTAMP" <<< "$PREEMPT_LINE"; then
+            echo "::error::Timestamp kernel incorrect"
+            echo "Attendu : $EXPECTED_TIMESTAMP"
+            echo "Obtenu  : $PREEMPT_LINE"
+            exit 1
+          fi
+
+          if grep -Fq "Jan  1 00:00:00 UTC 1970" <<< "$PREEMPT_LINE"; then
+            echo "::error::Timestamp Unix epoch détecté"
+            exit 1
+          fi
+
+          echo "=== Métadonnées kernel validées ==="
       - name: Gather versions
         id: versions
         shell: bash
