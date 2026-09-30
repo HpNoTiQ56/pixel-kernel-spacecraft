@@ -738,156 +738,156 @@ jobs:
           echo
           echo "Timestamp stock injecté correctement."
 
-      # - name: Install KernelSU-Next dev-susfs
-      #   shell: bash
-      #   env:
-      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-      #   run: |
-      #     set -euo pipefail
+      - name: Install KernelSU-Next dev-susfs
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
 
-      #     cd "$GKI_ROOT"
+          cd "$GKI_ROOT"
 
-      #     curl -LSs \
-      #       "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
-      #       | bash -s dev-susfs
+          curl -LSs \
+            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
+            | bash -s dev-susfs
             
-      # - name: Verify KernelSU-Next installation
-      #   shell: bash
-      #   env:
-      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-      #   run: |
-      #     set -euo pipefail
+      - name: Verify KernelSU-Next installation
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
 
-      #     cd "$GKI_ROOT"
+          cd "$GKI_ROOT"
 
-      #     echo "=== Branche ==="
-      #     git -C KernelSU-Next branch --show-current || true
+          echo "=== Branche ==="
+          git -C KernelSU-Next branch --show-current || true
 
-      #     echo
-      #     echo "=== Commit ==="
-      #     git -C KernelSU-Next log -1 --oneline || true
+          echo
+          echo "=== Commit ==="
+          git -C KernelSU-Next log -1 --oneline || true
 
-      #     echo
-      #     echo "=== Driver ==="
-      #     ls -lah drivers/kernelsu
+          echo
+          echo "=== Driver ==="
+          ls -lah drivers/kernelsu
 
-      #     echo
-      #     echo "=== Kconfig ==="
-      #     grep -R "KernelSU" . | head -20 || true
+          echo
+          echo "=== Kconfig ==="
+          grep -R "KernelSU" . | head -20 || true
 
-      #     echo
-      #     echo "=== Installation OK ==="
+          echo
+          echo "=== Installation OK ==="
 
-      # - name: Clone matching SUSFS branch
-      #   id: susfs
-      #   shell: bash
-      #   env:
-      #     SUSFS_BRANCH: ${{ steps.kmi.outputs.susfs_branch }}
-      #   run: |
-      #     set -euo pipefail
+      - name: Clone matching SUSFS branch
+        id: susfs
+        shell: bash
+        env:
+          SUSFS_BRANCH: ${{ steps.kmi.outputs.susfs_branch }}
+        run: |
+          set -euo pipefail
 
-      #     SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
-      #     SUSFS_DIR="$WORKSPACE/susfs4ksu"
+          SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
+          SUSFS_DIR="$WORKSPACE/susfs4ksu"
 
-      #     echo "=== Branche SUSFS demandée ==="
-      #     echo "$SUSFS_BRANCH"
+          echo "=== Branche SUSFS demandée ==="
+          echo "$SUSFS_BRANCH"
 
-      #     if ! git ls-remote \
-      #       --exit-code \
-      #       --heads \
-      #       "$SUSFS_REPO" \
-      #       "refs/heads/$SUSFS_BRANCH" \
-      #       >/dev/null; then
+          if ! git ls-remote \
+            --exit-code \
+            --heads \
+            "$SUSFS_REPO" \
+            "refs/heads/$SUSFS_BRANCH" \
+            >/dev/null; then
 
-      #       echo "::error::La branche $SUSFS_BRANCH n'existe pas dans susfs4ksu."
-      #       exit 1
-      #     fi
+            echo "::error::La branche $SUSFS_BRANCH n'existe pas dans susfs4ksu."
+            exit 1
+          fi
 
-      #     rm -rf "$SUSFS_DIR"
+          rm -rf "$SUSFS_DIR"
 
-      #     git clone \
-      #       --depth 1 \
-      #       --single-branch \
-      #       --branch "$SUSFS_BRANCH" \
-      #       "$SUSFS_REPO" \
-      #       "$SUSFS_DIR"
+          git clone \
+            --depth 1 \
+            --single-branch \
+            --branch "$SUSFS_BRANCH" \
+            "$SUSFS_REPO" \
+            "$SUSFS_DIR"
 
-      #     SUSFS_COMMIT="$(
-      #       git -C "$SUSFS_DIR" rev-parse HEAD
-      #     )"
+          SUSFS_COMMIT="$(
+            git -C "$SUSFS_DIR" rev-parse HEAD
+          )"
 
-      #     SUSFS_SUBJECT="$(
-      #       git -C "$SUSFS_DIR" log -1 --format='%s'
-      #     )"
+          SUSFS_SUBJECT="$(
+            git -C "$SUSFS_DIR" log -1 --format='%s'
+          )"
 
-      #     echo "susfs_dir=$SUSFS_DIR" >> "$GITHUB_OUTPUT"
-      #     echo "susfs_commit=$SUSFS_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "susfs_dir=$SUSFS_DIR" >> "$GITHUB_OUTPUT"
+          echo "susfs_commit=$SUSFS_COMMIT" >> "$GITHUB_OUTPUT"
 
-      #     echo
-      #     echo "=== SUSFS sélectionné ==="
-      #     echo "Branche : $SUSFS_BRANCH"
-      #     echo "Commit  : $SUSFS_COMMIT"
-      #     echo "Message : $SUSFS_SUBJECT"
+          echo
+          echo "=== SUSFS sélectionné ==="
+          echo "Branche : $SUSFS_BRANCH"
+          echo "Commit  : $SUSFS_COMMIT"
+          echo "Message : $SUSFS_SUBJECT"
 
-      #     {
-      #       echo "### SUSFS"
-      #       echo
-      #       echo "- Branche : \`$SUSFS_BRANCH\`"
-      #       echo "- Commit : \`$SUSFS_COMMIT\`"
-      #       echo "- Message : \`$SUSFS_SUBJECT\`"
-      #     } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### SUSFS"
+            echo
+            echo "- Branche : \`$SUSFS_BRANCH\`"
+            echo "- Commit : \`$SUSFS_COMMIT\`"
+            echo "- Message : \`$SUSFS_SUBJECT\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # - name: Integrate SUSFS into GKI kernel
-      #   shell: bash
-      #   env:
-      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-      #     SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
-      #     KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
-      #     KMI_STRING: ${{ steps.kmi.outputs.kmi_string }}
-      #   run: |
-      #     set -euo pipefail
+      - name: Integrate SUSFS into GKI kernel
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+          SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
+          KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
+          KMI_STRING: ${{ steps.kmi.outputs.kmi_string }}
+        run: |
+          set -euo pipefail
 
-      #     KERNEL_PATCH_SOURCE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-${KMI_STRING}.patch"
-      #     KERNEL_PATCH_LOCAL="$GKI_ROOT/50_add_susfs_in_gki-${KMI_STRING}.patch"
+          KERNEL_PATCH_SOURCE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-${KMI_STRING}.patch"
+          KERNEL_PATCH_LOCAL="$GKI_ROOT/50_add_susfs_in_gki-${KMI_STRING}.patch"
 
-      #     echo "=== Paramètres SUSFS ==="
-      #     echo "GKI_ROOT=$GKI_ROOT"
-      #     echo "SUSFS_DIR=$SUSFS_DIR"
-      #     echo "KERNEL_SERIES=$KERNEL_SERIES"
-      #     echo "KERNEL_PATCH_SOURCE=$KERNEL_PATCH_SOURCE"
+          echo "=== Paramètres SUSFS ==="
+          echo "GKI_ROOT=$GKI_ROOT"
+          echo "SUSFS_DIR=$SUSFS_DIR"
+          echo "KERNEL_SERIES=$KERNEL_SERIES"
+          echo "KERNEL_PATCH_SOURCE=$KERNEL_PATCH_SOURCE"
 
-      #     echo
-      #     echo "=== Validation des fichiers nécessaires ==="
+          echo
+          echo "=== Validation des fichiers nécessaires ==="
 
-      #     test -d "$GKI_ROOT"
-      #     test -d "$GKI_ROOT/fs"
-      #     test -d "$GKI_ROOT/include/linux"
-      #     test -d "$GKI_ROOT/KernelSU-Next"
-      #     test -L "$GKI_ROOT/drivers/kernelsu"
+          test -d "$GKI_ROOT"
+          test -d "$GKI_ROOT/fs"
+          test -d "$GKI_ROOT/include/linux"
+          test -d "$GKI_ROOT/KernelSU-Next"
+          test -L "$GKI_ROOT/drivers/kernelsu"
 
-      #     test -f "$KERNEL_PATCH_SOURCE"
-      #     test -d "$SUSFS_DIR/kernel_patches/fs"
-      #     test -d "$SUSFS_DIR/kernel_patches/include/linux"
+          test -f "$KERNEL_PATCH_SOURCE"
+          test -d "$SUSFS_DIR/kernel_patches/fs"
+          test -d "$SUSFS_DIR/kernel_patches/include/linux"
 
-      #     ls -lh "$KERNEL_PATCH_SOURCE"
+          ls -lh "$KERNEL_PATCH_SOURCE"
 
-      #     echo
-      #     echo "=== Copie du patch kernel ==="
+          echo
+          echo "=== Copie du patch kernel ==="
 
-      #     cp -f \
-      #       "$KERNEL_PATCH_SOURCE" \
-      #       "$KERNEL_PATCH_LOCAL"
+          # cp -f \
+          #   "$KERNEL_PATCH_SOURCE" \
+          #   "$KERNEL_PATCH_LOCAL"
 
-      #     echo
-      #     echo "=== Copie des sources SUSFS dans common/gki ==="
+          echo
+          echo "=== Copie des sources SUSFS dans common/gki ==="
 
-      #     cp -af \
-      #       "$SUSFS_DIR/kernel_patches/fs/." \
-      #       "$GKI_ROOT/fs/"
+          cp -af \
+            "$SUSFS_DIR/kernel_patches/fs/." \
+            "$GKI_ROOT/fs/"
 
-      #     cp -af \
-      #       "$SUSFS_DIR/kernel_patches/include/linux/." \
-      #       "$GKI_ROOT/include/linux/"
+          cp -af \
+            "$SUSFS_DIR/kernel_patches/include/linux/." \
+            "$GKI_ROOT/include/linux/"
 
       #     echo
       #     echo "=== Application partielle du patch SUSFS officiel ==="
