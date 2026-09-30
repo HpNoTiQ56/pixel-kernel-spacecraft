@@ -37,6 +37,17 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        
+      - name: Cleanup workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$WORKSPACE/release"
+          rm -rf "$WORKSPACE/custota"
+
+          mkdir -p "$WORKSPACE/release"
+          mkdir -p "$WORKSPACE/custota"
 
       - name: Download artifact from triggering run
         if: github.event_name == 'workflow_run'
@@ -296,6 +307,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "=== BOOT UTILISÉ ==="
+
+          sha256sum \
+            "${{ steps.files.outputs.boot_img }}"
+
+          strings "${{ steps.files.outputs.boot_img }}" \
+            | grep -a "PREEMPT" \
+            | head -5
+
           mkdir -p "$WORKSPACE/release"
 
           "$WORKSPACE/tools/avbroot" ota patch \
@@ -307,6 +327,7 @@ jobs:
             --pass-avb-file "$WORKSPACE/keys/avb.pass" \
             --pass-ota-file "$WORKSPACE/keys/ota.pass" \
             --prepatched "${{ steps.files.outputs.boot_img }}"
+            
       - name: Verify OTA boot image
         shell: bash
         run: |
@@ -335,6 +356,8 @@ jobs:
           echo "=== SHA OTA ==="
 
           sha256sum boot.img
+
+          
       - name: Generate SHA256
         id: sha
         shell: bash
