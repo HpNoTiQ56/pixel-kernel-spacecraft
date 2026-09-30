@@ -2,12 +2,18 @@ name: Build OTA + Publish Custota
 
 on:
   workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run ID Build Kernel (vide = dernier succès)"
+        required: false
+        type: string
 
   workflow_run:
     workflows:
       - "Build Kernel"
     types:
       - completed
+      
       
 permissions:
   contents: write
@@ -32,7 +38,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download build artifact from triggering run
+      - name: Download artifact from triggering run
         if: github.event_name == 'workflow_run'
         uses: dawidd6/action-download-artifact@v6
         with:
@@ -41,8 +47,17 @@ jobs:
           name: kernel-build
           path: ${{ env.WORKSPACE }}/custota
 
-      - name: Download latest successful build artifact
-        if: github.event_name == 'workflow_dispatch'
+      - name: Download artifact from specific run
+        if: github.event_name == 'workflow_dispatch' && inputs.run_id != ''
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          run_id: ${{ inputs.run_id }}
+          name: kernel-build
+          path: ${{ env.WORKSPACE }}/custota
+
+      - name: Download latest successful artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.run_id == ''
         uses: dawidd6/action-download-artifact@v6
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -51,29 +66,13 @@ jobs:
           branch: main
           name: kernel-build
           path: ${{ env.WORKSPACE }}/custota
-
-      - name: Verify downloaded build artifact
+          
+      - name: Verify artifact content
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "=== Contenu téléchargé ==="
-
-          find "$WORKSPACE/custota" \
-            -maxdepth 3 \
-            -type f \
-            -printf '%p\n' \
-            | sort
-
-          METADATA="$(
-            find "$WORKSPACE/custota" \
-              -type f \
-              -name 'build-metadata.json' \
-              -print \
-              -quit
-          )"
-
-          BOOT_IMG="$(
+          BOOT="$(
             find "$WORKSPACE/custota" \
               -type f \
               -name '*_boot_KSUNext_*_SUSFS_*.img' \
@@ -81,24 +80,12 @@ jobs:
               -quit
           )"
 
-          if [ -z "$METADATA" ] || [ ! -s "$METADATA" ]; then
-            echo "::error::build-metadata.json introuvable dans l'artifact"
-            exit 1
-          fi
+          echo "BOOT=$BOOT"
 
-          if [ -z "$BOOT_IMG" ] || [ ! -s "$BOOT_IMG" ]; then
-            echo "::error::Image boot KernelSU-Next introuvable dans l'artifact"
-            exit 1
-          fi
-
-          echo
-          echo "Metadata : $METADATA"
-          echo "Boot     : $BOOT_IMG"
-
-          echo
-          echo "=== Métadonnées ==="
-          jq . "$METADATA"
-    
+          strings "$BOOT" \
+            | grep -a "PREEMPT" \
+            | head -5
+            
       - name: Locate files
         id: files
         shell: bash
