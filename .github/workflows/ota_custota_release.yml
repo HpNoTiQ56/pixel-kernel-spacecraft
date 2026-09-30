@@ -108,23 +108,28 @@ jobs:
           BOOT_IMG="$(
             find "$WORKSPACE/custota" \
               -type f \
-              -name "*.img" \
-              | head -n1
+              -name '*_boot_KSUNext_*_SUSFS_*.img' \
+              -print \
+              -quit
           )"
 
           META_JSON="$(
             find "$WORKSPACE/custota" \
               -type f \
               -name "build-metadata.json" \
-              | head -n1
+              -print \
+              -quit
           )"
 
           test -f "$BOOT_IMG"
           test -f "$META_JSON"
 
+          echo "BOOT_IMG=$BOOT_IMG"
+          echo "META_JSON=$META_JSON"
+
           echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
           echo "meta_json=$META_JSON" >> "$GITHUB_OUTPUT"
-
+          
       - name: Read metadata
         id: meta
         shell: bash
@@ -272,7 +277,33 @@ jobs:
           echo "=== Version installée ==="
 
           "$AVBROOT_BIN" --version
+      - name: Verify boot used by avbroot
+        shell: bash
+        run: |
+          set -euo pipefail
 
+          echo "=== Boot sélectionné ==="
+
+          ls -lh \
+            "${{ steps.files.outputs.boot_img }}"
+
+          sha256sum \
+            "${{ steps.files.outputs.boot_img }}"
+
+          echo
+          echo "=== Version Kernel ==="
+
+          strings "${{ steps.files.outputs.boot_img }}" \
+            | grep -a "Linux version" \
+            | head -1
+
+          echo
+          echo "=== PREEMPT ==="
+
+          strings "${{ steps.files.outputs.boot_img }}" \
+            | grep -a "PREEMPT" \
+            | head -5
+            
       - name: Patch OTA
         shell: bash
         run: |
@@ -289,7 +320,34 @@ jobs:
             --pass-avb-file "$WORKSPACE/keys/avb.pass" \
             --pass-ota-file "$WORKSPACE/keys/ota.pass" \
             --prepatched "${{ steps.files.outputs.boot_img }}"
+      - name: Verify OTA boot image
+        shell: bash
+        run: |
+          set -euo pipefail
 
+          cd "$WORKSPACE/release"
+
+          "$WORKSPACE/tools/avbroot" ota extract \
+            --input ota-signed.zip
+
+          echo
+          echo "=== Boot extrait OTA ==="
+
+          strings boot.img \
+            | grep -a "Linux version" \
+            | head -1
+
+          echo
+          echo "=== PREEMPT OTA ==="
+
+          strings boot.img \
+            | grep -a "PREEMPT" \
+            | head -5
+
+          echo
+          echo "=== SHA OTA ==="
+
+          sha256sum boot.img
       - name: Generate SHA256
         id: sha
         shell: bash
