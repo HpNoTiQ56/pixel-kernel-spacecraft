@@ -876,9 +876,9 @@ jobs:
           echo
           echo "=== Copie du patch kernel ==="
 
-          # cp -f \
-          #   "$KERNEL_PATCH_SOURCE" \
-          #   "$KERNEL_PATCH_LOCAL"
+          cp -f \
+            "$KERNEL_PATCH_SOURCE" \
+            "$KERNEL_PATCH_LOCAL"
 
           echo
           echo "=== Copie des sources SUSFS dans common/gki ==="
