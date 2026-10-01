@@ -1195,7 +1195,32 @@ jobs:
           grep -R "SOURCE_DATE_EPOCH" \
             "$GKI_ROOT" \
             2>/dev/null | head -50 || true
-            
+
+      - name: Install nomount (built-in)
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
+
+          cd "$GKI_ROOT"
+
+          echo "=== Application du patch nomount ==="
+          curl -LSs https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+
+          echo "=== Passage de nomount en built-in par défaut ==="
+          # Modification directe du Kconfig généré pour forcer 'default y'
+          if grep -q "config NOMOUNT" fs/Kconfig; then
+            if grep -A 5 "config NOMOUNT" fs/Kconfig | grep -q "default"; then
+              sed -i '/config NOMOUNT/,/default/ s/default n/default y/' fs/Kconfig
+            else
+              sed -i '/config NOMOUNT/a \tdefault y' fs/Kconfig
+            fi
+          fi
+
+          echo "=== Vérification Kconfig ==="
+          grep -A 8 "config NOMOUNT" fs/Kconfig || true
+
       - name: Build GKI from sources
         shell: bash
         env:
