@@ -923,170 +923,170 @@ jobs:
             -exec cat {} \; \
             || true
 
-      # - name: Apply Spacecraft SUSFS fixups
-      #   shell: bash
-      #   env:
-      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-      #   run: |
-      #     set -euo pipefail
+      - name: Apply Spacecraft SUSFS fixups
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+        run: |
+          set -euo pipefail
 
-      #     FIXUP_PATCH="$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
+          FIXUP_PATCH="$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
 
-      #     echo "=== Patch complémentaire ==="
-      #     ls -lh "$FIXUP_PATCH"
+          echo "=== Patch complémentaire ==="
+          ls -lh "$FIXUP_PATCH"
 
-      #     cd "$GKI_ROOT"
+          cd "$GKI_ROOT"
 
-      #     echo
-      #     echo "=== Test du patch complémentaire ==="
+          echo
+          echo "=== Test du patch complémentaire ==="
 
-      #     patch \
-      #       --dry-run \
-      #       --forward \
-      #       --batch \
-      #       -p1 \
-      #       < "$FIXUP_PATCH"
+          patch \
+            --dry-run \
+            --forward \
+            --batch \
+            -p1 \
+            < "$FIXUP_PATCH"
 
-      #     echo
-      #     echo "=== Application du patch complémentaire ==="
+          echo
+          echo "=== Application du patch complémentaire ==="
 
-      #     patch \
-      #       --forward \
-      #       --batch \
-      #       -p1 \
-      #       < "$FIXUP_PATCH"
+          patch \
+            --forward \
+            --batch \
+            -p1 \
+            < "$FIXUP_PATCH"
 
-      #     echo
-      #     echo "=== Suppression des rejets désormais corrigés ==="
+          echo
+          echo "=== Suppression des rejets désormais corrigés ==="
 
-      #     rm -f \
-      #       fs/exec.c.rej \
-      #       fs/proc/task_mmu.c.rej
+          rm -f \
+            fs/exec.c.rej \
+            fs/proc/task_mmu.c.rej
 
-      #     echo
-      #     echo "=== Vérification des corrections ==="
+          echo
+          echo "=== Vérification des corrections ==="
 
-      #     grep -n -C 3 \
-      #       'include <linux/susfs_def.h>' \
-      #       fs/exec.c
+          grep -n -C 3 \
+            'include <linux/susfs_def.h>' \
+            fs/exec.c
 
-      #     grep -n -A 8 \
-      #       '^static int show_smap' \
-      #       fs/proc/task_mmu.c
+          grep -n -A 8 \
+            '^static int show_smap' \
+            fs/proc/task_mmu.c
 
-      #     echo
-      #     echo "=== Vérification des rejets restants ==="
+          echo
+          echo "=== Vérification des rejets restants ==="
 
-      #     REMAINING_REJECTS="$(
-      #       find "$GKI_ROOT" \
-      #         -type f \
-      #         -name '*.rej' \
-      #         -print
-      #     )"
+          REMAINING_REJECTS="$(
+            find "$GKI_ROOT" \
+              -type f \
+              -name '*.rej' \
+              -print
+          )"
 
-      #     if [ -n "$REMAINING_REJECTS" ]; then
-      #       echo "::error::Des rejets non traités subsistent :"
-      #       echo "$REMAINING_REJECTS"
-      #       exit 1
-      #     fi
+          if [ -n "$REMAINING_REJECTS" ]; then
+            echo "::error::Des rejets non traités subsistent :"
+            echo "$REMAINING_REJECTS"
+            exit 1
+          fi
 
-      #     echo "Patch complémentaire appliqué correctement."
+          echo "Patch complémentaire appliqué correctement."
 
-      #     echo
-      #     echo "=== Vérification des fichiers copiés ==="
+          echo
+          echo "=== Vérification des fichiers copiés ==="
 
-      #     test -s "$GKI_ROOT/fs/susfs.c"
-      #     test -s "$GKI_ROOT/include/linux/susfs.h"
+          test -s "$GKI_ROOT/fs/susfs.c"
+          test -s "$GKI_ROOT/include/linux/susfs.h"
 
-      #     ls -lh \
-      #       "$GKI_ROOT/fs/susfs.c" \
-      #       "$GKI_ROOT/include/linux/susfs.h"
+          ls -lh \
+            "$GKI_ROOT/fs/susfs.c" \
+            "$GKI_ROOT/include/linux/susfs.h"
 
-      #     echo
-      #     echo "=== Patch SUSFS kernel appliqué ==="
+          echo
+          echo "=== Patch SUSFS kernel appliqué ==="
 
-      # - name: Verify SUSFS kernel integration
-      #   shell: bash
-      #   env:
-      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-      #     KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
-      #     SUSFS_BRANCH: ${{ steps.kmi.outputs.susfs_branch }}
-      #   run: |
-      #     set -euo pipefail
+      - name: Verify SUSFS kernel integration
+        shell: bash
+        env:
+          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+          KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
+          SUSFS_BRANCH: ${{ steps.kmi.outputs.susfs_branch }}
+        run: |
+          set -euo pipefail
 
-      #     cd "$GKI_ROOT"
+          cd "$GKI_ROOT"
 
-      #     echo "=== Versions sélectionnées ==="
-      #     echo "Kernel Linux : $KERNEL_SERIES"
-      #     echo "Branche SUSFS : $SUSFS_BRANCH"
+          echo "=== Versions sélectionnées ==="
+          echo "Kernel Linux : $KERNEL_SERIES"
+          echo "Branche SUSFS : $SUSFS_BRANCH"
 
-      #     echo
-      #     echo "=== KernelSU-Next ==="
+          echo
+          echo "=== KernelSU-Next ==="
 
-      #     test -d KernelSU-Next
-      #     test -L drivers/kernelsu
+          test -d KernelSU-Next
+          test -L drivers/kernelsu
 
-      #     echo "Branche KernelSU-Next :"
-      #     git -C KernelSU-Next branch --show-current
+          echo "Branche KernelSU-Next :"
+          git -C KernelSU-Next branch --show-current
 
-      #     echo "Commit KernelSU-Next :"
-      #     git -C KernelSU-Next log -1 --oneline
+          echo "Commit KernelSU-Next :"
+          git -C KernelSU-Next log -1 --oneline
 
-      #     echo "Tag KernelSU-Next :"
-      #     git -C KernelSU-Next describe --tags --always
+          echo "Tag KernelSU-Next :"
+          git -C KernelSU-Next describe --tags --always
 
-      #     echo "Lien drivers/kernelsu :"
-      #     ls -lah drivers/kernelsu
-      #     readlink -f drivers/kernelsu
+          echo "Lien drivers/kernelsu :"
+          ls -lah drivers/kernelsu
+          readlink -f drivers/kernelsu
 
-      #     echo
-      #     echo "=== Fichiers SUSFS ==="
+          echo
+          echo "=== Fichiers SUSFS ==="
 
-      #     test -s include/linux/susfs.h
-      #     test -s fs/susfs.c
+          test -s include/linux/susfs.h
+          test -s fs/susfs.c
 
-      #     ls -lh \
-      #       include/linux/susfs.h \
-      #       fs/susfs.c
+          ls -lh \
+            include/linux/susfs.h \
+            fs/susfs.c
 
-      #     echo
-      #     echo "=== Intégration fs/Makefile ==="
+          echo
+          echo "=== Intégration fs/Makefile ==="
 
-      #     grep -n -E 'susfs(\.o)?' fs/Makefile
+          grep -n -E 'susfs(\.o)?' fs/Makefile
 
-      #     echo
-      #     echo "=== Intégration fs/Kconfig ==="
+          echo
+          echo "=== Intégration fs/Kconfig ==="
 
-      #     grep -n -E 'SUSFS|susfs' fs/Kconfig || true
+          grep -n -E 'SUSFS|susfs' fs/Kconfig || true
 
-      #     echo
-      #     echo "=== Configuration KernelSU-Next SUSFS ==="
+          echo
+          echo "=== Configuration KernelSU-Next SUSFS ==="
 
-      #     grep -n -E \
-      #       'config KSU|config KSU_SUSFS|KSU_SUSFS' \
-      #       KernelSU-Next/kernel/Kconfig \
-      #       | head -n 60 || true
+          grep -n -E \
+            'config KSU|config KSU_SUSFS|KSU_SUSFS' \
+            KernelSU-Next/kernel/Kconfig \
+            | head -n 60 || true
 
-      #     echo
-      #     echo "=== Références SUSFS dans KernelSU-Next ==="
+          echo
+          echo "=== Références SUSFS dans KernelSU-Next ==="
 
-      #     grep -R -n -m 30 \
-      #       -E 'linux/susfs\.h|CONFIG_KSU_SUSFS' \
-      #       KernelSU-Next/kernel \
-      #       drivers/kernelsu \
-      #       || true
+          grep -R -n -m 30 \
+            -E 'linux/susfs\.h|CONFIG_KSU_SUSFS' \
+            KernelSU-Next/kernel \
+            drivers/kernelsu \
+            || true
 
-      #     echo
-      #     echo "=== Vérifications bloquantes ==="
+          echo
+          echo "=== Vérifications bloquantes ==="
 
-      #     grep -q -E 'susfs(\.o)?' fs/Makefile
-      #     grep -q 'KSU_SUSFS' KernelSU-Next/kernel/Kconfig
-      #     grep -R -q 'linux/susfs\.h' KernelSU-Next/kernel
-      #     test -s include/linux/susfs.h
-      #     test -s fs/susfs.c
+          grep -q -E 'susfs(\.o)?' fs/Makefile
+          grep -q 'KSU_SUSFS' KernelSU-Next/kernel/Kconfig
+          grep -R -q 'linux/susfs\.h' KernelSU-Next/kernel
+          test -s include/linux/susfs.h
+          test -s fs/susfs.c
 
-      #     echo
-      #     echo "=== Intégration SUSFS kernel validée ==="
+          echo
+          echo "=== Intégration SUSFS kernel validée ==="
           
       - name: Disable protected modules
         shell: bash
