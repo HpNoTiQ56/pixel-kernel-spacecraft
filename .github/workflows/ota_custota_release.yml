@@ -931,7 +931,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
 
-                - name: Keep only last 3 builds for device
+      - name: Keep only last 3 builds for device
         shell: bash
         env:
           DEVICE: ${{ steps.meta.outputs.device }}
