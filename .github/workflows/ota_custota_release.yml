@@ -13,11 +13,14 @@ on:
       - "Build Kernel"
     types:
       - completed
-      
-      
+
 permissions:
-  contents: write
   actions: read
+  contents: read
+
+concurrency:
+  group: custota-publish
+  cancel-in-progress: false
 
 jobs:
   ota-release:
@@ -31,13 +34,61 @@ jobs:
       - X64
       - android-worker
 
+    timeout-minutes: 120
+
     env:
       WORKSPACE: /home/aurelien/workspace
+      OTA_MOUNT: /mnt/ota
+      OTA_PUBLIC_BASE_URL: https://ota.bdxbnb.com
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+
+      - name: Verify runner and OTA mount
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Runner ==="
+          hostname
+          whoami
+
+          echo
+          echo "=== Point de montage OTA ==="
+
+          if ! mountpoint -q "$OTA_MOUNT"; then
+            echo "::error::$OTA_MOUNT n'est pas un point de montage actif"
+            exit 1
+          fi
+
+          if [ ! -d "$OTA_MOUNT" ]; then
+            echo "::error::Répertoire absent : $OTA_MOUNT"
+            exit 1
+          fi
+
+          if [ ! -w "$OTA_MOUNT" ]; then
+            echo "::error::$OTA_MOUNT n'est pas accessible en écriture"
+            ls -ld "$OTA_MOUNT"
+            id
+            exit 1
+          fi
+
+          df -h "$OTA_MOUNT"
+          findmnt "$OTA_MOUNT" || true
+          ls -lah "$OTA_MOUNT"
+
+          echo
+          echo "=== Test d'écriture ==="
+
+          TEST_FILE="$OTA_MOUNT/.github-actions-write-test-$$"
+
+          printf 'test\n' > "$TEST_FILE"
+          test -s "$TEST_FILE"
+          rm -f "$TEST_FILE"
+
+          echo "Montage OTA opérationnel."
+
       - name: Cleanup workspace
         shell: bash
         run: |
@@ -45,9 +96,11 @@ jobs:
 
           rm -rf "$WORKSPACE/release"
           rm -rf "$WORKSPACE/custota"
+          rm -rf "$WORKSPACE/ota"
 
           mkdir -p "$WORKSPACE/release"
           mkdir -p "$WORKSPACE/custota"
+          mkdir -p "$WORKSPACE/ota"
 
       - name: Download artifact from triggering run
         if: github.event_name == 'workflow_run'
@@ -77,31 +130,20 @@ jobs:
           branch: main
           name: kernel-build
           path: ${{ env.WORKSPACE }}/custota
-          
-      - name: Verify artifact content
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          BOOT="$(
-            find "$WORKSPACE/custota" \
-              -type f \
-              -name '*_boot_KSUNext_*_SUSFS_*.img' \
-              -print \
-              -quit
-          )"
-
-          echo "BOOT=$BOOT"
-
-          strings "$BOOT" \
-            | grep -a "PREEMPT" \
-            | head -5
-            
       - name: Locate files
         id: files
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "=== Contenu de l'artifact ==="
+
+          find "$WORKSPACE/custota" \
+            -maxdepth 4 \
+            -type f \
+            -printf '%p\n' \
+            | sort
 
           BOOT_IMG="$(
             find "$WORKSPACE/custota" \
@@ -114,49 +156,270 @@ jobs:
           META_JSON="$(
             find "$WORKSPACE/custota" \
               -type f \
-              -name "build-metadata.json" \
+              -name 'build-metadata.json' \
               -print \
               -quit
           )"
 
-          test -f "$BOOT_IMG"
-          test -f "$META_JSON"
+          if [ -z "$BOOT_IMG" ] || [ ! -s "$BOOT_IMG" ]; then
+            echo "::error::Boot patché introuvable dans l'artifact"
+            exit 1
+          fi
+
+          if [ -z "$META_JSON" ] || [ ! -s "$META_JSON" ]; then
+            echo "::error::build-metadata.json introuvable dans l'artifact"
+            exit 1
+          fi
+
+          jq empty "$META_JSON"
 
           echo "BOOT_IMG=$BOOT_IMG"
           echo "META_JSON=$META_JSON"
 
           echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
           echo "meta_json=$META_JSON" >> "$GITHUB_OUTPUT"
-          
-      - name: Read metadata
+
+      - name: Read metadata and detect device
         id: meta
         shell: bash
+        env:
+          META_JSON: ${{ steps.files.outputs.meta_json }}
         run: |
           set -euo pipefail
 
-          META="${{ steps.files.outputs.meta_json }}"
+          OTA_URL="$(jq -er '.ota_url' "$META_JSON")"
+          SPL="$(jq -er '.spl' "$META_JSON")"
+          KSU_VERSION="$(jq -er '.ksu_version' "$META_JSON")"
+          SUSFS_VERSION="$(jq -er '.susfs_version' "$META_JSON")"
+          BUILD_REVISION="$(jq -er '.build_revision' "$META_JSON")"
+          STOCK_VERSION_CODE="$(jq -r '.version_code // empty' "$META_JSON")"
+          BOOT_FILENAME="$(jq -er '.boot_filename' "$META_JSON")"
 
-          OTA_URL="$(jq -r '.ota_url' "$META")"
-          SPL="$(jq -r '.spl' "$META")"
-          KSU_VERSION="$(jq -r '.ksu_version' "$META")"
-          SUSFS_VERSION="$(jq -r '.susfs_version' "$META")"
+          #
+          # Retrait de la query string, par exemple ?hl=fr.
+          #
+          OTA_URL_NO_QUERY="${OTA_URL%%\?*}"
+          OTA_FILENAME="${OTA_URL_NO_QUERY##*/}"
 
-          echo "ota_url=$OTA_URL" >> "$GITHUB_OUTPUT"
-          echo "spl=$SPL" >> "$GITHUB_OUTPUT"
-          echo "ksu_version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
-          echo "susfs_version=$SUSFS_VERSION" >> "$GITHUB_OUTPUT"
+          #
+          # Exemple :
+          # grizzly-ota-cd1a.260905.001.b1-e2698032.zip
+          # devient :
+          # grizzly
+          #
+          case "$OTA_FILENAME" in
+            *-ota-*.zip)
+              DEVICE="${OTA_FILENAME%%-ota-*}"
+              ;;
+            *)
+              echo "::error::Nom OTA non reconnu : $OTA_FILENAME"
+              echo "Format attendu : <device>-ota-<build>.zip"
+              exit 1
+              ;;
+          esac
 
-      - name: Download OTA
+          if ! printf '%s' "$DEVICE" | grep -Eq '^[a-z0-9_-]+$'; then
+            echo "::error::Codename OTA invalide : $DEVICE"
+            exit 1
+          fi
+
+          if ! printf '%s' "$BUILD_REVISION" | grep -Eq '^[0-9]{12}$'; then
+            echo "::error::build_revision invalide : $BUILD_REVISION"
+            echo "Format attendu : YYYYMMDDHHMM"
+            exit 1
+          fi
+
+          #
+          # Le versionCode Custota est uniquement basé sur la date du build.
+          # Il reste numérique et augmente à chaque nouvelle publication.
+          #
+          CUSTOTA_VERSION_CODE="$BUILD_REVISION"
+
+          #
+          # Nom lisible de la version publiée.
+          #
+          RELEASE_VERSION="${SPL}-r${BUILD_REVISION}"
+
+          {
+            echo "ota_url=$OTA_URL"
+            echo "ota_filename=$OTA_FILENAME"
+            echo "device=$DEVICE"
+            echo "spl=$SPL"
+            echo "ksu_version=$KSU_VERSION"
+            echo "susfs_version=$SUSFS_VERSION"
+            echo "build_revision=$BUILD_REVISION"
+            echo "stock_version_code=$STOCK_VERSION_CODE"
+            echo "boot_filename=$BOOT_FILENAME"
+            echo "custota_version_code=$CUSTOTA_VERSION_CODE"
+            echo "release_version=$RELEASE_VERSION"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "=== Métadonnées du build ==="
+          echo "DEVICE=$DEVICE"
+          echo "OTA_FILENAME=$OTA_FILENAME"
+          echo "SPL=$SPL"
+          echo "KSU_VERSION=$KSU_VERSION"
+          echo "SUSFS_VERSION=$SUSFS_VERSION"
+          echo "BUILD_REVISION=$BUILD_REVISION"
+          echo "CUSTOTA_VERSION_CODE=$CUSTOTA_VERSION_CODE"
+          echo "RELEASE_VERSION=$RELEASE_VERSION"
+
+          {
+            echo "### Publication Custota"
+            echo
+            echo "- Appareil : \`$DEVICE\`"
+            echo "- OTA source : \`$OTA_FILENAME\`"
+            echo "- SPL : \`$SPL\`"
+            echo "- KernelSU Next : \`$KSU_VERSION\`"
+            echo "- SUSFS : \`$SUSFS_VERSION\`"
+            echo "- Version : \`$RELEASE_VERSION\`"
+            echo "- VersionCode : \`$CUSTOTA_VERSION_CODE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify boot artifact
         shell: bash
+        env:
+          BOOT_IMG: ${{ steps.files.outputs.boot_img }}
         run: |
           set -euo pipefail
 
-          mkdir -p "$WORKSPACE/ota"
+          echo "=== Boot sélectionné ==="
+
+          ls -lh "$BOOT_IMG"
+          file "$BOOT_IMG"
+          sha256sum "$BOOT_IMG"
+
+          echo
+          echo "=== Linux version ==="
+
+          LINUX_VERSION="$(
+            strings "$BOOT_IMG" \
+              | grep -a -m1 'Linux version'
+          )"
+
+          if [ -z "$LINUX_VERSION" ]; then
+            echo "::error::Linux version introuvable dans le boot"
+            exit 1
+          fi
+
+          echo "$LINUX_VERSION"
+
+          echo
+          echo "=== PREEMPT ==="
+
+          strings "$BOOT_IMG" \
+            | grep -a -m5 'PREEMPT' \
+            || true
+
+      - name: Download stock OTA
+        shell: bash
+        env:
+          OTA_URL: ${{ steps.meta.outputs.ota_url }}
+        run: |
+          set -euo pipefail
+
+          STOCK_OTA="$WORKSPACE/ota/stock.zip"
+          TEMP_OTA="$WORKSPACE/ota/stock.zip.part"
+
+          rm -f "$STOCK_OTA" "$TEMP_OTA"
+
+          echo "=== Téléchargement OTA source ==="
+          echo "$OTA_URL"
 
           curl \
-            -L \
-            "${{ steps.meta.outputs.ota_url }}" \
-            -o "$WORKSPACE/ota/stock.zip"
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --continue-at - \
+            --output "$TEMP_OTA" \
+            "$OTA_URL"
+
+          test -s "$TEMP_OTA"
+
+          mv "$TEMP_OTA" "$STOCK_OTA"
+
+          echo
+          echo "=== OTA téléchargée ==="
+
+          ls -lh "$STOCK_OTA"
+          file "$STOCK_OTA"
+          sha256sum "$STOCK_OTA"
+
+          echo
+          echo "=== Validation ZIP ==="
+
+          unzip -tq "$STOCK_OTA"
+
+      - name: Validate OTA device metadata
+        id: otadevice
+        shell: bash
+        env:
+          EXPECTED_DEVICE: ${{ steps.meta.outputs.device }}
+        run: |
+          set -euo pipefail
+
+          STOCK_OTA="$WORKSPACE/ota/stock.zip"
+          OTA_METADATA="$WORKSPACE/ota/metadata.txt"
+
+          echo "=== Métadonnées OTA source ==="
+
+          unzip -p \
+            "$STOCK_OTA" \
+            META-INF/com/android/metadata \
+            > "$OTA_METADATA"
+
+          if [ ! -s "$OTA_METADATA" ]; then
+            echo "::error::META-INF/com/android/metadata absent ou vide"
+            exit 1
+          fi
+
+          cat "$OTA_METADATA"
+
+          PRE_DEVICE="$(
+            sed -n 's/^pre-device=//p' "$OTA_METADATA" \
+              | head -n 1
+          )"
+
+          POST_DEVICE="$(
+            sed -n 's/^post-device=//p' "$OTA_METADATA" \
+              | head -n 1
+          )"
+
+          if [ -z "$PRE_DEVICE" ]; then
+            echo "::error::pre-device absent des métadonnées OTA"
+            exit 1
+          fi
+
+          device_list_contains() {
+            local device_list="$1"
+            local expected_device="$2"
+
+            printf '%s\n' "$device_list" \
+              | tr '|,' '\n\n' \
+              | sed '/^$/d' \
+              | grep -Fqx -- "$expected_device"
+          }
+
+          if ! device_list_contains "$PRE_DEVICE" "$EXPECTED_DEVICE"; then
+            echo "::error::OTA conçue pour '$PRE_DEVICE', codename URL attendu '$EXPECTED_DEVICE'"
+            exit 1
+          fi
+
+          if [ -n "$POST_DEVICE" ] &&
+             ! device_list_contains "$POST_DEVICE" "$EXPECTED_DEVICE"; then
+            echo "::error::post-device='$POST_DEVICE', appareil attendu='$EXPECTED_DEVICE'"
+            exit 1
+          fi
+
+          echo
+          echo "=== Appareil validé ==="
+          echo "EXPECTED_DEVICE=$EXPECTED_DEVICE"
+          echo "PRE_DEVICE=$PRE_DEVICE"
+          echo "POST_DEVICE=$POST_DEVICE"
+
+          echo "pre_device=$PRE_DEVICE" >> "$GITHUB_OUTPUT"
+          echo "post_device=$POST_DEVICE" >> "$GITHUB_OUTPUT"
 
       - name: Restore signing keys
         shell: bash
@@ -168,28 +431,37 @@ jobs:
           OTA_PASS: ${{ secrets.OTA_PASS }}
         run: |
           set -euo pipefail
-      
-          mkdir -p "$WORKSPACE/keys"
-      
+
+          KEYS_DIR="$WORKSPACE/keys"
+
+          rm -rf "$KEYS_DIR"
+          mkdir -p "$KEYS_DIR"
+
           printf '%s' "$AVB_KEY_B64" \
             | base64 -d \
-            > "$WORKSPACE/keys/avb.key"
-      
+            > "$KEYS_DIR/avb.key"
+
           printf '%s' "$OTA_KEY_B64" \
             | base64 -d \
-            > "$WORKSPACE/keys/ota.key"
-      
+            > "$KEYS_DIR/ota.key"
+
           printf '%s' "$OTA_CRT_B64" \
             | base64 -d \
-            > "$WORKSPACE/keys/ota.crt"
-      
+            > "$KEYS_DIR/ota.crt"
+
           printf '%s' "$AVB_PASS" \
-            > "$WORKSPACE/keys/avb.pass"
-      
+            > "$KEYS_DIR/avb.pass"
+
           printf '%s' "$OTA_PASS" \
-            > "$WORKSPACE/keys/ota.pass"
-      
-          chmod 600 "$WORKSPACE/keys/"*
+            > "$KEYS_DIR/ota.pass"
+
+          chmod 600 "$KEYS_DIR/"*
+
+          test -s "$KEYS_DIR/avb.key"
+          test -s "$KEYS_DIR/ota.key"
+          test -s "$KEYS_DIR/ota.crt"
+          test -s "$KEYS_DIR/avb.pass"
+          test -s "$KEYS_DIR/ota.pass"
 
       - name: Install avbroot
         shell: bash
@@ -230,7 +502,6 @@ jobs:
           echo "=== Téléchargement avbroot ==="
           echo "Version : $AVBROOT_VERSION"
           echo "Cible   : $TARGET"
-          echo "URL     : $DOWNLOAD_URL"
 
           rm -f "$AVBROOT_ZIP"
 
@@ -243,13 +514,7 @@ jobs:
             "$DOWNLOAD_URL" \
             --output "$AVBROOT_ZIP"
 
-          echo
-          echo "=== Archive téléchargée ==="
-
-          ls -lh "$AVBROOT_ZIP"
-          file "$AVBROOT_ZIP"
-
-          unzip -t "$AVBROOT_ZIP"
+          unzip -tq "$AVBROOT_ZIP"
 
           rm -f "$AVBROOT_BIN"
 
@@ -271,161 +536,543 @@ jobs:
 
           chmod 700 "$AVBROOT_BIN"
 
-          echo
-          echo "=== Version installée ==="
-
           "$AVBROOT_BIN" --version
-      - name: Verify boot used by avbroot
+
+      - name: Patch and sign OTA
         shell: bash
+        env:
+          BOOT_IMG: ${{ steps.files.outputs.boot_img }}
         run: |
           set -euo pipefail
 
-          echo "=== Boot sélectionné ==="
+          STOCK_OTA="$WORKSPACE/ota/stock.zip"
+          OUTPUT_OTA="$WORKSPACE/release/ota-signed.zip"
 
-          ls -lh \
-            "${{ steps.files.outputs.boot_img }}"
+          test -s "$STOCK_OTA"
+          test -s "$BOOT_IMG"
 
-          sha256sum \
-            "${{ steps.files.outputs.boot_img }}"
+          rm -f "$OUTPUT_OTA"
+
+          echo "=== Boot utilisé par avbroot ==="
+
+          sha256sum "$BOOT_IMG"
+
+          strings "$BOOT_IMG" \
+            | grep -a -m1 'Linux version'
 
           echo
-          echo "=== Version Kernel ==="
-
-          strings "${{ steps.files.outputs.boot_img }}" \
-            | grep -a "Linux version" \
-            | head -1
-
-          echo
-          echo "=== PREEMPT ==="
-
-          strings "${{ steps.files.outputs.boot_img }}" \
-            | grep -a "PREEMPT" \
-            | head -5
-            
-      - name: Patch OTA
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== BOOT UTILISÉ ==="
-
-          sha256sum \
-            "${{ steps.files.outputs.boot_img }}"
-
-          strings "${{ steps.files.outputs.boot_img }}" \
-            | grep -a "PREEMPT" \
-            | head -5
-
-          mkdir -p "$WORKSPACE/release"
+          echo "=== Patch et signature OTA ==="
 
           "$WORKSPACE/tools/avbroot" ota patch \
-            --input "$WORKSPACE/ota/stock.zip" \
-            --output "$WORKSPACE/release/ota-signed.zip" \
+            --input "$STOCK_OTA" \
+            --output "$OUTPUT_OTA" \
             --key-avb "$WORKSPACE/keys/avb.key" \
             --key-ota "$WORKSPACE/keys/ota.key" \
             --cert-ota "$WORKSPACE/keys/ota.crt" \
             --pass-avb-file "$WORKSPACE/keys/avb.pass" \
             --pass-ota-file "$WORKSPACE/keys/ota.pass" \
-            --prepatched "${{ steps.files.outputs.boot_img }}"
-            
-      - name: Verify OTA boot image
+            --prepatched "$BOOT_IMG"
+
+          test -s "$OUTPUT_OTA"
+
+          echo
+          echo "=== OTA signée ==="
+
+          ls -lh "$OUTPUT_OTA"
+          file "$OUTPUT_OTA"
+
+      - name: Verify signed OTA device metadata
         shell: bash
+        env:
+          EXPECTED_DEVICE: ${{ steps.meta.outputs.device }}
         run: |
           set -euo pipefail
 
-          cd "$WORKSPACE/release"
+          OUTPUT_OTA="$WORKSPACE/release/ota-signed.zip"
+          SIGNED_METADATA="$WORKSPACE/release/signed-metadata.txt"
 
-          "$WORKSPACE/tools/avbroot" ota extract \
-            --input ota-signed.zip
+          unzip -tq "$OUTPUT_OTA"
+
+          unzip -p \
+            "$OUTPUT_OTA" \
+            META-INF/com/android/metadata \
+            > "$SIGNED_METADATA"
+
+          test -s "$SIGNED_METADATA"
+
+          echo "=== Métadonnées OTA signée ==="
+
+          cat "$SIGNED_METADATA"
+
+          PRE_DEVICE="$(
+            sed -n 's/^pre-device=//p' "$SIGNED_METADATA" \
+              | head -n 1
+          )"
+
+          if [ -z "$PRE_DEVICE" ]; then
+            echo "::error::pre-device absent de l'OTA signée"
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$PRE_DEVICE" \
+            | tr '|,' '\n\n' \
+            | sed '/^$/d' \
+            | grep -Fqx -- "$EXPECTED_DEVICE"
+          then
+            echo "::error::OTA signée pour '$PRE_DEVICE', attendu '$EXPECTED_DEVICE'"
+            exit 1
+          fi
 
           echo
-          echo "=== Boot extrait OTA ==="
+          echo "OTA signée validée pour $EXPECTED_DEVICE."
+
+      - name: Verify boot embedded in signed OTA
+        shell: bash
+        env:
+          SOURCE_BOOT: ${{ steps.files.outputs.boot_img }}
+        run: |
+          set -euo pipefail
+
+          VERIFY_DIR="$WORKSPACE/release/verify"
+
+          rm -rf "$VERIFY_DIR"
+          mkdir -p "$VERIFY_DIR"
+
+          cd "$VERIFY_DIR"
+
+          "$WORKSPACE/tools/avbroot" ota extract \
+            --input "$WORKSPACE/release/ota-signed.zip"
+
+          if [ ! -s boot.img ]; then
+            echo "::error::boot.img absent après extraction de l'OTA signée"
+            exit 1
+          fi
+
+          echo "=== Boot source ==="
+
+          sha256sum "$SOURCE_BOOT"
+
+          strings "$SOURCE_BOOT" \
+            | grep -a -m1 'Linux version'
+
+          echo
+          echo "=== Boot extrait de l'OTA ==="
+
+          sha256sum boot.img
 
           strings boot.img \
-            | grep -a "Linux version" \
-            | head -1
+            | grep -a -m1 'Linux version'
 
           echo
           echo "=== PREEMPT OTA ==="
 
           strings boot.img \
-            | grep -a "PREEMPT" \
-            | head -5
+            | grep -a -m5 'PREEMPT' \
+            || true
 
-          echo
-          echo "=== SHA OTA ==="
-
-          sha256sum boot.img
-
-          
-      - name: Generate SHA256
+      - name: Generate signed OTA SHA256
         id: sha
         shell: bash
         run: |
           set -euo pipefail
 
+          OUTPUT_OTA="$WORKSPACE/release/ota-signed.zip"
+
           SHA256="$(
-            sha256sum "$WORKSPACE/release/ota-signed.zip" \
-            | awk '{print $1}'
+            sha256sum "$OUTPUT_OTA" \
+              | awk '{print $1}'
           )"
+
+          if ! printf '%s' "$SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "::error::SHA-256 invalide : $SHA256"
+            exit 1
+          fi
 
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
-          
-      - name: Generate Custota version
-        id: buildver
-        shell: bash
-        run: |
-          set -euo pipefail
+          echo "OTA_SHA256=$SHA256"
 
-          KSU="${{ steps.meta.outputs.ksu_version }}"
-
-          SUSFS="$(
-            echo '${{ steps.meta.outputs.susfs_version }}' |
-            sed 's/^v//' |
-            tr -d '.'
-          )"
-
-          REV="$(
-            echo '${{ steps.meta.outputs.build_revision }}' |
-            cut -c9-12
-          )"
-
-          CUSTOTA_VERSION_CODE="${KSU}${SUSFS}${REV}"
-
-          echo "custota_version=$CUSTOTA_VERSION_CODE" \
-            >> "$GITHUB_OUTPUT"
-
-          echo "CUSTOTA_VERSION_CODE=$CUSTOTA_VERSION_CODE"
-          
       - name: Generate Custota JSON
+        id: custota
         shell: bash
-        run: |
-          set -euo pipefail
-
-          TAG="${{ steps.meta.outputs.spl }}_KSUNext_${{ steps.meta.outputs.ksu_version }}_SUSFS_${{ steps.meta.outputs.susfs_version }}"
-
-          cat > "$WORKSPACE/release/grizzly.json" <<EOF
-          {
-            "version": "${{ steps.meta.outputs.spl }}-r${{ steps.meta.outputs.build_revision }}",
-            "versionCode": ${{ steps.buildver.outputs.custota_version }},
-            "zipUrl": "https://github.com/${{ github.repository }}/releases/download/${TAG}/ota-signed.zip",
-            "zipSha256": "${{ steps.sha.outputs.sha256 }}",
-            "changelog": "KernelSU Next ${{ steps.meta.outputs.ksu_version }} + SUSFS ${{ steps.meta.outputs.susfs_version }}"
-          }
-          EOF
-          
-      - name: Create Release
         env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
+          DEVICE: ${{ steps.meta.outputs.device }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
+          VERSION_CODE: ${{ steps.meta.outputs.custota_version_code }}
+          BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
+          KSU_VERSION: ${{ steps.meta.outputs.ksu_version }}
+          SUSFS_VERSION: ${{ steps.meta.outputs.susfs_version }}
+          SPL: ${{ steps.meta.outputs.spl }}
+          OTA_SHA256: ${{ steps.sha.outputs.sha256 }}
         run: |
           set -euo pipefail
 
-          TAG="${{ steps.meta.outputs.spl }}_KSUNext_${{ steps.meta.outputs.ksu_version }}_SUSFS_${{ steps.meta.outputs.susfs_version }}"
+          JSON_FILE="$WORKSPACE/release/${DEVICE}.json"
 
-          gh release create "$TAG" \
-            "$WORKSPACE/release/ota-signed.zip" \
-            "$WORKSPACE/release/grizzly.json" \
-            "${{ steps.files.outputs.boot_img }}" \
-            --title "$TAG" \
-            --latest
+          ZIP_URL="${OTA_PUBLIC_BASE_URL}/${DEVICE}/${BUILD_REVISION}/ota-signed.zip"
+
+          CHANGELOG="KernelSU Next ${KSU_VERSION} + SUSFS ${SUSFS_VERSION} - SPL ${SPL}"
+
+          jq -n \
+            --arg version "$RELEASE_VERSION" \
+            --argjson versionCode "$VERSION_CODE" \
+            --arg zipUrl "$ZIP_URL" \
+            --arg zipSha256 "$OTA_SHA256" \
+            --arg changelog "$CHANGELOG" \
+            '{
+              version: $version,
+              versionCode: $versionCode,
+              zipUrl: $zipUrl,
+              zipSha256: $zipSha256,
+              changelog: $changelog
+            }' \
+            > "$JSON_FILE"
+
+          jq empty "$JSON_FILE"
+
+          echo "=== JSON Custota ==="
+
+          cat "$JSON_FILE"
+
+          echo "json_file=$JSON_FILE" >> "$GITHUB_OUTPUT"
+          echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Publish versioned OTA to Unraid
+        shell: bash
+        env:
+          DEVICE: ${{ steps.meta.outputs.device }}
+          BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
+          BOOT_IMG: ${{ steps.files.outputs.boot_img }}
+          JSON_FILE: ${{ steps.custota.outputs.json_file }}
+          EXPECTED_SHA256: ${{ steps.sha.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+
+          SOURCE_OTA="$WORKSPACE/release/ota-signed.zip"
+
+          DEVICE_DIR="$OTA_MOUNT/$DEVICE"
+          VERSION_DIR="$DEVICE_DIR/$BUILD_REVISION"
+
+          OTA_PART="$VERSION_DIR/ota-signed.zip.part"
+          OTA_FINAL="$VERSION_DIR/ota-signed.zip"
+
+          BOOT_PART="$VERSION_DIR/boot.img.part"
+          BOOT_FINAL="$VERSION_DIR/boot.img"
+
+          VERSION_JSON_PART="$VERSION_DIR/${DEVICE}.json.part"
+          VERSION_JSON_FINAL="$VERSION_DIR/${DEVICE}.json"
+
+          CURRENT_JSON_PART="$OTA_MOUNT/${DEVICE}.json.part"
+          CURRENT_JSON_FINAL="$OTA_MOUNT/${DEVICE}.json"
+
+          echo "=== Destination ==="
+          echo "DEVICE_DIR=$DEVICE_DIR"
+          echo "VERSION_DIR=$VERSION_DIR"
+          echo "CURRENT_JSON=$CURRENT_JSON_FINAL"
+
+          mkdir -p "$VERSION_DIR"
+
+          #
+          # Publication du ZIP dans un nom temporaire.
+          #
+          rm -f "$OTA_PART"
+
+          cp \
+            "$SOURCE_OTA" \
+            "$OTA_PART"
+
+          test -s "$OTA_PART"
+
+          COPIED_SHA256="$(
+            sha256sum "$OTA_PART" \
+              | awk '{print $1}'
+          )"
+
+          echo "SHA attendu : $EXPECTED_SHA256"
+          echo "SHA copié   : $COPIED_SHA256"
+
+          if [ "$COPIED_SHA256" != "$EXPECTED_SHA256" ]; then
+            echo "::error::Le SHA-256 du fichier copié ne correspond pas"
+            rm -f "$OTA_PART"
+            exit 1
+          fi
+
+          mv -f "$OTA_PART" "$OTA_FINAL"
+
+          #
+          # Publication du boot de cette version.
+          #
+          rm -f "$BOOT_PART"
+
+          cp \
+            "$BOOT_IMG" \
+            "$BOOT_PART"
+
+          test -s "$BOOT_PART"
+          mv -f "$BOOT_PART" "$BOOT_FINAL"
+
+          #
+          # Copie du JSON dans le répertoire historisé.
+          #
+          rm -f "$VERSION_JSON_PART"
+
+          cp \
+            "$JSON_FILE" \
+            "$VERSION_JSON_PART"
+
+          jq empty "$VERSION_JSON_PART"
+          mv -f "$VERSION_JSON_PART" "$VERSION_JSON_FINAL"
+
+          #
+          # Le JSON courant est publié en dernier.
+          # Custota ne peut donc pas voir une version avant la fin de la copie OTA.
+          #
+          rm -f "$CURRENT_JSON_PART"
+
+          cp \
+            "$JSON_FILE" \
+            "$CURRENT_JSON_PART"
+
+          jq empty "$CURRENT_JSON_PART"
+          mv -f "$CURRENT_JSON_PART" "$CURRENT_JSON_FINAL"
+
+          echo
+          echo "=== Publication terminée ==="
+
+          ls -lh \
+            "$OTA_FINAL" \
+            "$BOOT_FINAL" \
+            "$VERSION_JSON_FINAL" \
+            "$CURRENT_JSON_FINAL"
+
+          echo
+          echo "=== SHA final sur Unraid ==="
+
+          sha256sum "$OTA_FINAL"
+
+      - name: Verify public Custota endpoints
+        shell: bash
+        env:
+          DEVICE: ${{ steps.meta.outputs.device }}
+          BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
+          EXPECTED_SHA256: ${{ steps.sha.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+
+          JSON_URL="${OTA_PUBLIC_BASE_URL}/${DEVICE}.json"
+          OTA_URL="${OTA_PUBLIC_BASE_URL}/${DEVICE}/${BUILD_REVISION}/ota-signed.zip"
+
+          echo "=== Vérification JSON public ==="
+          echo "$JSON_URL"
+
+          PUBLIC_JSON="$(
+            curl \
+              --fail \
+              --location \
+              --retry 5 \
+              --retry-delay 3 \
+              --silent \
+              --show-error \
+              "$JSON_URL"
+          )"
+
+          printf '%s\n' "$PUBLIC_JSON" | jq .
+
+          PUBLIC_URL="$(
+            jq -r '.zipUrl' \
+              <<< "$PUBLIC_JSON"
+          )"
+
+          PUBLIC_SHA="$(
+            jq -r '.zipSha256' \
+              <<< "$PUBLIC_JSON"
+          )"
+
+          if [ "$PUBLIC_URL" != "$OTA_URL" ]; then
+            echo "::error::zipUrl publique incorrecte"
+            echo "Attendu : $OTA_URL"
+            echo "Obtenu  : $PUBLIC_URL"
+            exit 1
+          fi
+
+          if [ "$PUBLIC_SHA" != "$EXPECTED_SHA256" ]; then
+            echo "::error::zipSha256 public incorrect"
+            echo "Attendu : $EXPECTED_SHA256"
+            echo "Obtenu  : $PUBLIC_SHA"
+            exit 1
+          fi
+
+          echo
+          echo "=== Vérification OTA publique ==="
+          echo "$OTA_URL"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 3 \
+            --silent \
+            --show-error \
+            --range 0-0 \
+            --output /dev/null \
+            "$OTA_URL"
+
+          echo
+          echo "=== Publication Custota validée ==="
+          echo "JSON : $JSON_URL"
+          echo "OTA  : $OTA_URL"
+
+          {
+            echo
+            echo "### Publication réussie"
+            echo
+            echo "- JSON Custota : \`$JSON_URL\`"
+            echo "- OTA signée : \`$OTA_URL\`"
+            echo "- SHA-256 : \`$EXPECTED_SHA256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+                - name: Keep only last 3 builds for device
+        shell: bash
+        env:
+          DEVICE: ${{ steps.meta.outputs.device }}
+          CURRENT_BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
+        run: |
+          set -euo pipefail
+
+          DEVICE_DIR="$OTA_MOUNT/$DEVICE"
+          KEEP_COUNT=3
+
+          echo "=== Nettoyage des anciennes versions ==="
+          echo "Appareil       : $DEVICE"
+          echo "Répertoire     : $DEVICE_DIR"
+          echo "Version active : $CURRENT_BUILD_REVISION"
+          echo "Versions gardées : $KEEP_COUNT"
+
+          if [ ! -d "$DEVICE_DIR" ]; then
+            echo "::error::Répertoire appareil introuvable : $DEVICE_DIR"
+            exit 1
+          fi
+
+          if [ ! -s "$OTA_MOUNT/${DEVICE}.json" ]; then
+            echo "::error::JSON courant absent : $OTA_MOUNT/${DEVICE}.json"
+            exit 1
+          fi
+
+          if [ ! -s "$DEVICE_DIR/$CURRENT_BUILD_REVISION/ota-signed.zip" ]; then
+            echo "::error::OTA active absente avant nettoyage"
+            exit 1
+          fi
+
+          #
+          # Ne sélectionne que les répertoires de version sur 12 chiffres.
+          # Exemple : 202610041452
+          #
+          mapfile -t BUILDS < <(
+            find "$DEVICE_DIR" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -printf '%f\n' \
+            | grep -E '^[0-9]{12}$' \
+            | sort -r
+          )
+
+          BUILD_COUNT="${#BUILDS[@]}"
+
+          echo
+          echo "=== Builds détectés : $BUILD_COUNT ==="
+
+          if [ "$BUILD_COUNT" -eq 0 ]; then
+            echo "::error::Aucun répertoire de build détecté"
+            exit 1
+          fi
+
+          printf '%s\n' "${BUILDS[@]}"
+
+          echo
+          echo "=== Builds conservés ==="
+
+          for build in "${BUILDS[@]:0:$KEEP_COUNT}"; do
+            echo "KEEP   $build"
+          done
+
+          if [ "$BUILD_COUNT" -le "$KEEP_COUNT" ]; then
+            echo
+            echo "Aucun ancien build à supprimer."
+            exit 0
+          fi
+
+          echo
+          echo "=== Builds supprimés ==="
+
+          for build in "${BUILDS[@]:$KEEP_COUNT}"; do
+            BUILD_PATH="$DEVICE_DIR/$build"
+
+            #
+            # Sécurités pour empêcher tout rm sur un mauvais chemin.
+            #
+            if [ "$build" = "$CURRENT_BUILD_REVISION" ]; then
+              echo "::error::Refus de supprimer la version active : $build"
+              exit 1
+            fi
+
+            case "$BUILD_PATH" in
+              "$OTA_MOUNT/$DEVICE/"*)
+                ;;
+              *)
+                echo "::error::Chemin de suppression non sécurisé : $BUILD_PATH"
+                exit 1
+                ;;
+            esac
+
+            if ! printf '%s' "$build" | grep -Eq '^[0-9]{12}$'; then
+              echo "::error::Nom de build non valide : $build"
+              exit 1
+            fi
+
+            echo "DELETE $build"
+
+            rm -rf --one-file-system "$BUILD_PATH"
+          done
+
+          echo
+          echo "=== État final ==="
+
+          mapfile -t REMAINING_BUILDS < <(
+            find "$DEVICE_DIR" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -printf '%f\n' \
+            | grep -E '^[0-9]{12}$' \
+            | sort -r
+          )
+
+          printf '%s\n' "${REMAINING_BUILDS[@]}"
+
+          REMAINING_COUNT="${#REMAINING_BUILDS[@]}"
+
+          if [ "$REMAINING_COUNT" -gt "$KEEP_COUNT" ]; then
+            echo "::error::Il reste $REMAINING_COUNT builds au lieu de $KEEP_COUNT maximum"
+            exit 1
+          fi
+
+          if [ ! -s "$DEVICE_DIR/$CURRENT_BUILD_REVISION/ota-signed.zip" ]; then
+            echo "::error::La version active a disparu après nettoyage"
+            exit 1
+          fi
+
+          echo
+          echo "Nettoyage terminé : $REMAINING_COUNT build(s) conservé(s) pour $DEVICE."
+
+          {
+            echo
+            echo "### Rétention"
+            echo
+            echo "- Appareil : \`$DEVICE\`"
+            echo "- Builds conservés : \`$REMAINING_COUNT\`"
+            echo
+            for build in "${REMAINING_BUILDS[@]}"; do
+              echo "  - \`$build\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
