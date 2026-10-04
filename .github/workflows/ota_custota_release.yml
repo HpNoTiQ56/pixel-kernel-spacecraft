@@ -691,50 +691,7 @@ jobs:
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "OTA_SHA256=$SHA256"
 
-      - name: Generate Custota JSON
-        id: custota
-        shell: bash
-        env:
-          DEVICE: ${{ steps.meta.outputs.device }}
-          RELEASE_VERSION: ${{ steps.meta.outputs.release_version }}
-          VERSION_CODE: ${{ steps.meta.outputs.custota_version_code }}
-          BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
-          KSU_VERSION: ${{ steps.meta.outputs.ksu_version }}
-          SUSFS_VERSION: ${{ steps.meta.outputs.susfs_version }}
-          SPL: ${{ steps.meta.outputs.spl }}
-          OTA_SHA256: ${{ steps.sha.outputs.sha256 }}
-        run: |
-          set -euo pipefail
-
-          JSON_FILE="$WORKSPACE/release/${DEVICE}.json"
-
-          ZIP_URL="${OTA_PUBLIC_BASE_URL}/${DEVICE}/${BUILD_REVISION}/ota-signed.zip"
-
-          CHANGELOG="KernelSU Next ${KSU_VERSION} + SUSFS ${SUSFS_VERSION} - SPL ${SPL}"
-
-          jq -n \
-            --arg version "$RELEASE_VERSION" \
-            --argjson versionCode "$VERSION_CODE" \
-            --arg zipUrl "$ZIP_URL" \
-            --arg zipSha256 "$OTA_SHA256" \
-            --arg changelog "$CHANGELOG" \
-            '{
-              version: $version,
-              versionCode: $versionCode,
-              zipUrl: $zipUrl,
-              zipSha256: $zipSha256,
-              changelog: $changelog
-            }' \
-            > "$JSON_FILE"
-
-          jq empty "$JSON_FILE"
-
-          echo "=== JSON Custota ==="
-
-          cat "$JSON_FILE"
-
-          echo "json_file=$JSON_FILE" >> "$GITHUB_OUTPUT"
-          echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"      - name: Install Custota Tool
+      - name: Install Custota Tool
         shell: bash
         env:
           CUSTOTA_VERSION: "6.6"
