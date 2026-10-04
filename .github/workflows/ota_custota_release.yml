@@ -734,7 +734,261 @@ jobs:
           cat "$JSON_FILE"
 
           echo "json_file=$JSON_FILE" >> "$GITHUB_OUTPUT"
-          echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"
+          echo "zip_url=$ZIP_URL" >> "$GITHUB_OUTPUT"      - name: Install Custota Tool
+        shell: bash
+        env:
+          CUSTOTA_VERSION: "6.6"
+        run: |
+          set -euo pipefail
+
+          TOOLS_DIR="$WORKSPACE/tools"
+          CUSTOTA_BIN="$TOOLS_DIR/custota-tool"
+          CUSTOTA_ZIP="$TOOLS_DIR/custota-tool.zip"
+          EXTRACT_DIR="$TOOLS_DIR/custota-tool-extract"
+
+          mkdir -p "$TOOLS_DIR"
+
+          if [ -x "$CUSTOTA_BIN" ]; then
+            INSTALLED_VERSION="$(
+              "$CUSTOTA_BIN" --version 2>/dev/null || true
+            )"
+
+            echo "Version installée : $INSTALLED_VERSION"
+
+            if printf '%s' "$INSTALLED_VERSION" |
+              grep -Fq "$CUSTOTA_VERSION"
+            then
+              echo "custota-tool $CUSTOTA_VERSION déjà installé."
+              exit 0
+            fi
+
+            echo "Version différente détectée, réinstallation."
+            rm -f "$CUSTOTA_BIN"
+          fi
+
+          ARCH="$(uname -m)"
+
+          case "$ARCH" in
+            x86_64)
+              TARGET="x86_64-unknown-linux-gnu"
+              ;;
+            aarch64|arm64)
+              TARGET="aarch64-unknown-linux-gnu"
+              ;;
+            *)
+              echo "::error::Architecture non supportée : $ARCH"
+              exit 1
+              ;;
+          esac
+
+          ARCHIVE_NAME="custota-tool-${CUSTOTA_VERSION}-${TARGET}.zip"
+
+          DOWNLOAD_URL="https://github.com/chenxiaolong/Custota/releases/download/v${CUSTOTA_VERSION}/${ARCHIVE_NAME}"
+
+          echo "=== Installation custota-tool ==="
+          echo "Version : $CUSTOTA_VERSION"
+          echo "Cible   : $TARGET"
+          echo "Archive : $ARCHIVE_NAME"
+
+          rm -f "$CUSTOTA_ZIP"
+          rm -rf "$EXTRACT_DIR"
+
+          mkdir -p "$EXTRACT_DIR"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --show-error \
+            "$DOWNLOAD_URL" \
+            --output "$CUSTOTA_ZIP"
+
+          echo
+          echo "=== Archive téléchargée ==="
+
+          ls -lh "$CUSTOTA_ZIP"
+          file "$CUSTOTA_ZIP"
+
+          unzip -tq "$CUSTOTA_ZIP"
+
+          unzip -o \
+            "$CUSTOTA_ZIP" \
+            -d "$EXTRACT_DIR"
+
+          CUSTOTA_FOUND="$(
+            find "$EXTRACT_DIR" \
+              -type f \
+              -name 'custota-tool' \
+              -print \
+              -quit
+          )"
+
+          if [ -z "$CUSTOTA_FOUND" ]; then
+            echo "::error::Binaire custota-tool introuvable dans l'archive"
+
+            find "$EXTRACT_DIR" \
+              -maxdepth 4 \
+              -type f \
+              -printf '%p\n' \
+              | sort
+
+            exit 1
+          fi
+
+          cp "$CUSTOTA_FOUND" "$CUSTOTA_BIN"
+
+          chmod 700 "$CUSTOTA_BIN"
+
+          rm -rf "$EXTRACT_DIR"
+          rm -f "$CUSTOTA_ZIP"
+
+          echo
+          echo "=== Version installée ==="
+
+          "$CUSTOTA_BIN" --version
+
+          echo
+          echo "=== Commandes disponibles ==="
+
+          "$CUSTOTA_BIN" --help
+
+      - name: Prepare OTA signing key for Custota
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_KEY="$WORKSPACE/keys/ota.key"
+          PASSPHRASE_FILE="$WORKSPACE/keys/ota.pass"
+          CUSTOTA_KEY="$WORKSPACE/keys/ota-custota.key"
+
+          test -s "$SOURCE_KEY"
+          test -s "$PASSPHRASE_FILE"
+
+          rm -f "$CUSTOTA_KEY"
+
+          echo "=== Préparation de la clé pour custota-tool ==="
+
+          #
+          # custota-tool peut demander interactivement la passphrase.
+          # Pour éviter toute interaction dans GitHub Actions, on crée une
+          # copie temporaire non chiffrée de la clé privée.
+          #
+          openssl pkey \
+            -in "$SOURCE_KEY" \
+            -passin "file:$PASSPHRASE_FILE" \
+            -out "$CUSTOTA_KEY"
+
+          chmod 600 "$CUSTOTA_KEY"
+
+          test -s "$CUSTOTA_KEY"
+
+          echo
+          echo "=== Vérification de la clé ==="
+
+          openssl pkey \
+            -in "$CUSTOTA_KEY" \
+            -check \
+            -noout
+
+          echo "Clé temporaire Custota prête."
+
+      - name: Generate Custota csig and update info
+        id: custota
+        shell: bash
+        env:
+          DEVICE: ${{ steps.meta.outputs.device }}
+          BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
+        run: |
+          set -euo pipefail
+
+          CUSTOTA_BIN="$WORKSPACE/tools/custota-tool"
+          OTA_FILE="$WORKSPACE/release/ota-signed.zip"
+
+          CUSTOTA_DIR="$WORKSPACE/release/custota"
+          CSIG_FILE="$CUSTOTA_DIR/ota-signed.zip.csig"
+          JSON_FILE="$CUSTOTA_DIR/${DEVICE}.json"
+
+          CUSTOTA_KEY="$WORKSPACE/keys/ota-custota.key"
+          OTA_CERT="$WORKSPACE/keys/ota.crt"
+
+          test -x "$CUSTOTA_BIN"
+          test -s "$OTA_FILE"
+          test -s "$CUSTOTA_KEY"
+          test -s "$OTA_CERT"
+
+          rm -rf "$CUSTOTA_DIR"
+          mkdir -p "$CUSTOTA_DIR"
+
+          echo "=== Génération du fichier CSIG ==="
+
+          "$CUSTOTA_BIN" gen-csig \
+            --input "$OTA_FILE" \
+            --output "$CSIG_FILE" \
+            --key "$CUSTOTA_KEY" \
+            --cert "$OTA_CERT"
+
+          if [ ! -s "$CSIG_FILE" ]; then
+            echo "::error::Le fichier CSIG n'a pas été généré"
+            exit 1
+          fi
+
+          echo
+          echo "=== CSIG généré ==="
+
+          ls -lh "$CSIG_FILE"
+          file "$CSIG_FILE"
+
+          echo
+          echo "=== Inspection du CSIG ==="
+
+          "$CUSTOTA_BIN" show-csig \
+            --input "$CSIG_FILE"
+
+          echo
+          echo "=== Génération du JSON officiel Custota ==="
+
+          #
+          # Le JSON se trouve à la racine :
+          #
+          # /grizzly.json
+          #
+          # et pointe vers :
+          #
+          # /grizzly/<revision>/ota-signed.zip
+          #
+          # custota-tool déduira par défaut que le CSIG se trouve à :
+          #
+          # /grizzly/<revision>/ota-signed.zip.csig
+          #
+          LOCATION="${DEVICE}/${BUILD_REVISION}/ota-signed.zip"
+
+          "$CUSTOTA_BIN" gen-update-info \
+            --file "$JSON_FILE" \
+            --location "$LOCATION"
+
+          if [ ! -s "$JSON_FILE" ]; then
+            echo "::error::Le JSON Custota n'a pas été généré"
+            exit 1
+          fi
+
+          echo
+          echo "=== JSON Custota officiel ==="
+
+          jq . "$JSON_FILE"
+
+          echo
+          echo "=== Fichiers Custota ==="
+
+          ls -lh \
+            "$CSIG_FILE" \
+            "$JSON_FILE"
+
+          {
+            echo "csig_file=$CSIG_FILE"
+            echo "json_file=$JSON_FILE"
+            echo "location=$LOCATION"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish versioned OTA to Unraid
         shell: bash
@@ -743,6 +997,7 @@ jobs:
           BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
           BOOT_IMG: ${{ steps.files.outputs.boot_img }}
           JSON_FILE: ${{ steps.custota.outputs.json_file }}
+          CSIG_FILE: ${{ steps.custota.outputs.csig_file }}
           EXPECTED_SHA256: ${{ steps.sha.outputs.sha256 }}
         run: |
           set -euo pipefail
@@ -755,6 +1010,9 @@ jobs:
           OTA_PART="$VERSION_DIR/ota-signed.zip.part"
           OTA_FINAL="$VERSION_DIR/ota-signed.zip"
 
+          CSIG_PART="$VERSION_DIR/ota-signed.zip.csig.part"
+          CSIG_FINAL="$VERSION_DIR/ota-signed.zip.csig"
+
           BOOT_PART="$VERSION_DIR/boot.img.part"
           BOOT_FINAL="$VERSION_DIR/boot.img"
 
@@ -764,16 +1022,22 @@ jobs:
           CURRENT_JSON_PART="$OTA_MOUNT/${DEVICE}.json.part"
           CURRENT_JSON_FINAL="$OTA_MOUNT/${DEVICE}.json"
 
-          echo "=== Destination ==="
-          echo "DEVICE_DIR=$DEVICE_DIR"
-          echo "VERSION_DIR=$VERSION_DIR"
-          echo "CURRENT_JSON=$CURRENT_JSON_FINAL"
+          test -s "$SOURCE_OTA"
+          test -s "$BOOT_IMG"
+          test -s "$JSON_FILE"
+          test -s "$CSIG_FILE"
+
+          echo "=== Destination de publication ==="
+          echo "Appareil   : $DEVICE"
+          echo "Révision   : $BUILD_REVISION"
+          echo "Répertoire : $VERSION_DIR"
+          echo "JSON actif : $CURRENT_JSON_FINAL"
 
           mkdir -p "$VERSION_DIR"
 
-          #
-          # Publication du ZIP dans un nom temporaire.
-          #
+          echo
+          echo "=== Copie de l'OTA ==="
+
           rm -f "$OTA_PART"
 
           cp \
@@ -791,16 +1055,29 @@ jobs:
           echo "SHA copié   : $COPIED_SHA256"
 
           if [ "$COPIED_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "::error::Le SHA-256 du fichier copié ne correspond pas"
+            echo "::error::Le SHA-256 de l'OTA copiée ne correspond pas"
             rm -f "$OTA_PART"
             exit 1
           fi
 
           mv -f "$OTA_PART" "$OTA_FINAL"
 
-          #
-          # Publication du boot de cette version.
-          #
+          echo
+          echo "=== Copie du CSIG ==="
+
+          rm -f "$CSIG_PART"
+
+          cp \
+            "$CSIG_FILE" \
+            "$CSIG_PART"
+
+          test -s "$CSIG_PART"
+
+          mv -f "$CSIG_PART" "$CSIG_FINAL"
+
+          echo
+          echo "=== Copie du boot ==="
+
           rm -f "$BOOT_PART"
 
           cp \
@@ -808,11 +1085,12 @@ jobs:
             "$BOOT_PART"
 
           test -s "$BOOT_PART"
+
           mv -f "$BOOT_PART" "$BOOT_FINAL"
 
-          #
-          # Copie du JSON dans le répertoire historisé.
-          #
+          echo
+          echo "=== Copie du JSON historisé ==="
+
           rm -f "$VERSION_JSON_PART"
 
           cp \
@@ -820,11 +1098,18 @@ jobs:
             "$VERSION_JSON_PART"
 
           jq empty "$VERSION_JSON_PART"
-          mv -f "$VERSION_JSON_PART" "$VERSION_JSON_FINAL"
+
+          mv -f \
+            "$VERSION_JSON_PART" \
+            "$VERSION_JSON_FINAL"
+
+          echo
+          echo "=== Publication du JSON actif ==="
 
           #
-          # Le JSON courant est publié en dernier.
-          # Custota ne peut donc pas voir une version avant la fin de la copie OTA.
+          # Le JSON actif est publié en dernier.
+          # Custota ne peut donc jamais voir une nouvelle version avant que
+          # l'OTA et son CSIG soient entièrement copiés.
           #
           rm -f "$CURRENT_JSON_PART"
 
@@ -833,13 +1118,17 @@ jobs:
             "$CURRENT_JSON_PART"
 
           jq empty "$CURRENT_JSON_PART"
-          mv -f "$CURRENT_JSON_PART" "$CURRENT_JSON_FINAL"
+
+          mv -f \
+            "$CURRENT_JSON_PART" \
+            "$CURRENT_JSON_FINAL"
 
           echo
           echo "=== Publication terminée ==="
 
           ls -lh \
             "$OTA_FINAL" \
+            "$CSIG_FINAL" \
             "$BOOT_FINAL" \
             "$VERSION_JSON_FINAL" \
             "$CURRENT_JSON_FINAL"
@@ -849,19 +1138,25 @@ jobs:
 
           sha256sum "$OTA_FINAL"
 
+      - name: Remove temporary unencrypted signing key
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$WORKSPACE/keys/ota-custota.key"
+
       - name: Verify public Custota endpoints
         shell: bash
         env:
           DEVICE: ${{ steps.meta.outputs.device }}
           BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
-          EXPECTED_SHA256: ${{ steps.sha.outputs.sha256 }}
         run: |
           set -euo pipefail
 
           JSON_URL="${OTA_PUBLIC_BASE_URL}/${DEVICE}.json"
           OTA_URL="${OTA_PUBLIC_BASE_URL}/${DEVICE}/${BUILD_REVISION}/ota-signed.zip"
+          CSIG_URL="${OTA_URL}.csig"
 
-          echo "=== Vérification JSON public ==="
+          echo "=== Vérification du JSON public ==="
           echo "$JSON_URL"
 
           PUBLIC_JSON="$(
@@ -877,33 +1172,29 @@ jobs:
 
           printf '%s\n' "$PUBLIC_JSON" | jq .
 
-          PUBLIC_URL="$(
-            jq -r '.zipUrl' \
-              <<< "$PUBLIC_JSON"
-          )"
+          echo
+          echo "=== Vérification du CSIG public ==="
+          echo "$CSIG_URL"
 
-          PUBLIC_SHA="$(
-            jq -r '.zipSha256' \
-              <<< "$PUBLIC_JSON"
-          )"
-
-          if [ "$PUBLIC_URL" != "$OTA_URL" ]; then
-            echo "::error::zipUrl publique incorrecte"
-            echo "Attendu : $OTA_URL"
-            echo "Obtenu  : $PUBLIC_URL"
-            exit 1
-          fi
-
-          if [ "$PUBLIC_SHA" != "$EXPECTED_SHA256" ]; then
-            echo "::error::zipSha256 public incorrect"
-            echo "Attendu : $EXPECTED_SHA256"
-            echo "Obtenu  : $PUBLIC_SHA"
-            exit 1
-          fi
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 3 \
+            --silent \
+            --show-error \
+            --output /dev/null \
+            "$CSIG_URL"
 
           echo
-          echo "=== Vérification OTA publique ==="
+          echo "=== Vérification HTTP Range de l'OTA ==="
           echo "$OTA_URL"
+
+          HEADERS="$(
+            mktemp
+          )"
+
+          trap 'rm -f "$HEADERS"' EXIT
 
           curl \
             --fail \
@@ -913,23 +1204,52 @@ jobs:
             --silent \
             --show-error \
             --range 0-0 \
+            --dump-header "$HEADERS" \
             --output /dev/null \
             "$OTA_URL"
+
+          cat "$HEADERS"
+
+          HTTP_STATUS="$(
+            awk '
+              toupper($1) ~ /^HTTP\// {
+                status = $2
+              }
+
+              END {
+                print status
+              }
+            ' "$HEADERS"
+          )"
+
+          if [ "$HTTP_STATUS" != "206" ]; then
+            echo "::error::Le serveur n'a pas répondu HTTP 206 au Range request"
+            echo "Statut reçu : $HTTP_STATUS"
+            exit 1
+          fi
+
+          if ! grep -qi '^Content-Range:' "$HEADERS"; then
+            echo "::error::En-tête Content-Range absent"
+            exit 1
+          fi
 
           echo
           echo "=== Publication Custota validée ==="
           echo "JSON : $JSON_URL"
-          echo "OTA  : $OTA_URL"
+          echo "OTA   : $OTA_URL"
+          echo "CSIG  : $CSIG_URL"
 
           {
             echo
-            echo "### Publication réussie"
+            echo "### Publication Custota réussie"
             echo
-            echo "- JSON Custota : \`$JSON_URL\`"
-            echo "- OTA signée : \`$OTA_URL\`"
-            echo "- SHA-256 : \`$EXPECTED_SHA256\`"
+            echo "- Appareil : \`$DEVICE\`"
+            echo "- Révision : \`$BUILD_REVISION\`"
+            echo "- JSON : \`$JSON_URL\`"
+            echo "- OTA : \`$OTA_URL\`"
+            echo "- CSIG : \`$CSIG_URL\`"
+            echo "- HTTP Range : \`206 Partial Content\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
 
       - name: Keep only last 3 builds for device
         shell: bash
@@ -943,9 +1263,9 @@ jobs:
           KEEP_COUNT=3
 
           echo "=== Nettoyage des anciennes versions ==="
-          echo "Appareil       : $DEVICE"
-          echo "Répertoire     : $DEVICE_DIR"
-          echo "Version active : $CURRENT_BUILD_REVISION"
+          echo "Appareil         : $DEVICE"
+          echo "Répertoire       : $DEVICE_DIR"
+          echo "Version active   : $CURRENT_BUILD_REVISION"
           echo "Versions gardées : $KEEP_COUNT"
 
           if [ ! -d "$DEVICE_DIR" ]; then
@@ -963,10 +1283,11 @@ jobs:
             exit 1
           fi
 
-          #
-          # Ne sélectionne que les répertoires de version sur 12 chiffres.
-          # Exemple : 202610041452
-          #
+          if [ ! -s "$DEVICE_DIR/$CURRENT_BUILD_REVISION/ota-signed.zip.csig" ]; then
+            echo "::error::CSIG actif absent avant nettoyage"
+            exit 1
+          fi
+
           mapfile -t BUILDS < <(
             find "$DEVICE_DIR" \
               -mindepth 1 \
@@ -999,6 +1320,19 @@ jobs:
           if [ "$BUILD_COUNT" -le "$KEEP_COUNT" ]; then
             echo
             echo "Aucun ancien build à supprimer."
+
+            {
+              echo
+              echo "### Rétention"
+              echo
+              echo "- Appareil : \`$DEVICE\`"
+              echo "- Builds conservés : \`$BUILD_COUNT\`"
+
+              for build in "${BUILDS[@]}"; do
+                echo "  - \`$build\`"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+
             exit 0
           fi
 
@@ -1008,11 +1342,15 @@ jobs:
           for build in "${BUILDS[@]:$KEEP_COUNT}"; do
             BUILD_PATH="$DEVICE_DIR/$build"
 
-            #
-            # Sécurités pour empêcher tout rm sur un mauvais chemin.
-            #
             if [ "$build" = "$CURRENT_BUILD_REVISION" ]; then
               echo "::error::Refus de supprimer la version active : $build"
+              exit 1
+            fi
+
+            if ! printf '%s' "$build" |
+              grep -Eq '^[0-9]{12}$'
+            then
+              echo "::error::Nom de build non valide : $build"
               exit 1
             fi
 
@@ -1024,11 +1362,6 @@ jobs:
                 exit 1
                 ;;
             esac
-
-            if ! printf '%s' "$build" | grep -Eq '^[0-9]{12}$'; then
-              echo "::error::Nom de build non valide : $build"
-              exit 1
-            fi
 
             echo "DELETE $build"
 
@@ -1062,6 +1395,11 @@ jobs:
             exit 1
           fi
 
+          if [ ! -s "$DEVICE_DIR/$CURRENT_BUILD_REVISION/ota-signed.zip.csig" ]; then
+            echo "::error::Le CSIG actif a disparu après nettoyage"
+            exit 1
+          fi
+
           echo
           echo "Nettoyage terminé : $REMAINING_COUNT build(s) conservé(s) pour $DEVICE."
 
@@ -1071,7 +1409,7 @@ jobs:
             echo
             echo "- Appareil : \`$DEVICE\`"
             echo "- Builds conservés : \`$REMAINING_COUNT\`"
-            echo
+
             for build in "${REMAINING_BUILDS[@]}"; do
               echo "  - \`$build\`"
             done
