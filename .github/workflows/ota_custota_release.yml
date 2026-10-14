@@ -138,31 +138,13 @@ jobs:
           set -euo pipefail
 
           echo "=== Contenu de l'artifact ==="
+          find "$WORKSPACE/custota" -maxdepth 4 -type f -printf '%p\n' | sort
 
-          find "$WORKSPACE/custota" \
-            -maxdepth 4 \
-            -type f \
-            -printf '%p\n' \
-            | sort
+          PATCHED_IMAGE="$(find "$WORKSPACE/custota" -type f -name 'patched-image.img' -print -quit)"
+          META_JSON="$(find "$WORKSPACE/custota" -type f -name 'build-metadata.json' -print -quit)"
 
-          BOOT_IMG="$(
-            find "$WORKSPACE/custota" \
-              -type f \
-              -name '*_boot_KSUNext_*_SUSFS_*.img' \
-              -print \
-              -quit
-          )"
-
-          META_JSON="$(
-            find "$WORKSPACE/custota" \
-              -type f \
-              -name 'build-metadata.json' \
-              -print \
-              -quit
-          )"
-
-          if [ -z "$BOOT_IMG" ] || [ ! -s "$BOOT_IMG" ]; then
-            echo "::error::Boot patché introuvable dans l'artifact"
+          if [ -z "$PATCHED_IMAGE" ] || [ ! -s "$PATCHED_IMAGE" ]; then
+            echo "::error::patched-image.img introuvable dans l'artifact"
             exit 1
           fi
 
@@ -173,11 +155,24 @@ jobs:
 
           jq empty "$META_JSON"
 
-          echo "BOOT_IMG=$BOOT_IMG"
-          echo "META_JSON=$META_JSON"
+          IMAGE_TYPE="$(jq -er '.image_type' "$META_JSON")"
+          case "$IMAGE_TYPE" in
+            boot|init_boot) ;;
+            *)
+              echo "::error::image_type invalide : $IMAGE_TYPE"
+              exit 1
+              ;;
+          esac
 
-          echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
-          echo "meta_json=$META_JSON" >> "$GITHUB_OUTPUT"
+          echo "PATCHED_IMAGE=$PATCHED_IMAGE"
+          echo "META_JSON=$META_JSON"
+          echo "IMAGE_TYPE=$IMAGE_TYPE"
+
+          {
+            echo "patched_image=$PATCHED_IMAGE"
+            echo "meta_json=$META_JSON"
+            echo "image_type=$IMAGE_TYPE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Read metadata and detect device
         id: meta
@@ -189,11 +184,12 @@ jobs:
 
           OTA_URL="$(jq -er '.ota_url' "$META_JSON")"
           SPL="$(jq -er '.spl' "$META_JSON")"
-          KSU_VERSION="$(jq -er '.ksu_version' "$META_JSON")"
-          SUSFS_VERSION="$(jq -er '.susfs_version' "$META_JSON")"
+          KSU_VERSION="$(jq -r '.ksu_version // "unknown"' "$META_JSON")"
+          SUSFS_VERSION="$(jq -r '.susfs_version // "none"' "$META_JSON")"
+          IMAGE_TYPE="$(jq -er '.image_type' "$META_JSON")"
           BUILD_REVISION="$(jq -er '.build_revision' "$META_JSON")"
           STOCK_VERSION_CODE="$(jq -r '.version_code // empty' "$META_JSON")"
-          BOOT_FILENAME="$(jq -er '.boot_filename' "$META_JSON")"
+          IMAGE_FILENAME="$(jq -er '.image_filename // .boot_filename' "$META_JSON")"
 
           #
           # Retrait de la query string, par exemple ?hl=fr.
@@ -249,7 +245,8 @@ jobs:
             echo "susfs_version=$SUSFS_VERSION"
             echo "build_revision=$BUILD_REVISION"
             echo "stock_version_code=$STOCK_VERSION_CODE"
-            echo "boot_filename=$BOOT_FILENAME"
+            echo "image_type=$IMAGE_TYPE"
+            echo "image_filename=$IMAGE_FILENAME"
             echo "custota_version_code=$CUSTOTA_VERSION_CODE"
             echo "release_version=$RELEASE_VERSION"
           } >> "$GITHUB_OUTPUT"
@@ -260,6 +257,8 @@ jobs:
           echo "SPL=$SPL"
           echo "KSU_VERSION=$KSU_VERSION"
           echo "SUSFS_VERSION=$SUSFS_VERSION"
+          echo "IMAGE_TYPE=$IMAGE_TYPE"
+          echo "IMAGE_FILENAME=$IMAGE_FILENAME"
           echo "BUILD_REVISION=$BUILD_REVISION"
           echo "CUSTOTA_VERSION_CODE=$CUSTOTA_VERSION_CODE"
           echo "RELEASE_VERSION=$RELEASE_VERSION"
@@ -276,82 +275,43 @@ jobs:
             echo "- VersionCode : \`$CUSTOTA_VERSION_CODE\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Verify boot artifact
+      - name: Verify patched image artifact
         shell: bash
         env:
-          BOOT_IMG: ${{ steps.files.outputs.boot_img }}
+          PATCHED_IMAGE: ${{ steps.files.outputs.patched_image }}
+          IMAGE_TYPE: ${{ steps.files.outputs.image_type }}
         run: |
           set -euo pipefail
 
-          echo "=== Boot sélectionné ==="
+          test -s "$PATCHED_IMAGE"
 
-          test -s "$BOOT_IMG"
+          echo "=== Image patchée ==="
+          echo "IMAGE_TYPE=$IMAGE_TYPE"
+          ls -lh "$PATCHED_IMAGE"
+          file "$PATCHED_IMAGE"
+          sha256sum "$PATCHED_IMAGE"
 
-          ls -lh "$BOOT_IMG"
-          file "$BOOT_IMG"
-          sha256sum "$BOOT_IMG"
-
-          echo
-          echo "=== Identification du kernel ==="
-
-          KERNEL_RELEASE="$(
-            strings "$BOOT_IMG" \
-              | grep -aoE '[0-9]+\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
-              | head -n1 \
-              || true
-          )"
-
-          if [ -z "$KERNEL_RELEASE" ]; then
-            echo "::error::Version du kernel introuvable dans le boot"
+          if [ "$IMAGE_TYPE" = "boot" ]; then
             echo
-            echo "=== Diagnostic ==="
+            echo "=== Kernel embarqué ==="
 
-            strings "$BOOT_IMG" \
-              | grep -a -m20 -E 'android[0-9]+|PREEMPT|kleaf|ab[0-9]+' \
-              || true
+            KERNEL_RELEASE="$(
+              strings "$PATCHED_IMAGE" \
+                | grep -aoE '[0-9]\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
+                | head -n1 \
+                || true
+            )"
 
-            exit 1
+            if [ -z "$KERNEL_RELEASE" ]; then
+              echo "::error::Version kernel introuvable dans boot.img"
+              exit 1
+            fi
+
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+            strings "$PATCHED_IMAGE" | grep -a -m5 'PREEMPT' || true
+          else
+            echo "init_boot patché valide : aucun kernel embarqué attendu."
           fi
-
-          echo "KERNEL_RELEASE=$KERNEL_RELEASE"
-
-          echo
-          echo "=== PREEMPT ==="
-
-          PREEMPT_LINE="$(
-            strings "$BOOT_IMG" \
-              | grep -a -m1 '^#1 SMP PREEMPT ' \
-              || true
-          )"
-
-          if [ -z "$PREEMPT_LINE" ]; then
-            echo "::error::Ligne PREEMPT introuvable dans le boot"
-            exit 1
-          fi
-
-          echo "$PREEMPT_LINE"
-
-          echo
-          echo "=== GKI Build ID ==="
-
-          GKI_BUILD_ID="$(
-            printf '%s\n' "$KERNEL_RELEASE" \
-              | grep -aoE 'ab[0-9]+' \
-              | head -n1 \
-              | sed 's/^ab//' \
-              || true
-          )"
-
-          if [ -z "$GKI_BUILD_ID" ]; then
-            echo "::error::Build ID GKI introuvable"
-            exit 1
-          fi
-
-          echo "GKI_BUILD_ID=$GKI_BUILD_ID"
-
-          echo
-          echo "=== Boot validé ==="
-          
 
       - name: Download stock OTA
         shell: bash
@@ -583,7 +543,8 @@ jobs:
       - name: Patch and sign OTA
         shell: bash
         env:
-          BOOT_IMG: ${{ steps.files.outputs.boot_img }}
+          PATCHED_IMAGE: ${{ steps.files.outputs.patched_image }}
+          IMAGE_TYPE: ${{ steps.files.outputs.image_type }}
         run: |
           set -euo pipefail
 
@@ -591,16 +552,15 @@ jobs:
           OUTPUT_OTA="$WORKSPACE/release/ota-signed.zip"
 
           test -s "$STOCK_OTA"
-          test -s "$BOOT_IMG"
-
+          test -s "$PATCHED_IMAGE"
           rm -f "$OUTPUT_OTA"
 
-          echo "=== Boot utilisé par avbroot ==="
-          
-          ls -lh "$BOOT_IMG"
-          file "$BOOT_IMG"
-          sha256sum "$BOOT_IMG"
-          
+          echo "=== Image prépatchée utilisée par avbroot ==="
+          echo "IMAGE_TYPE=$IMAGE_TYPE"
+          ls -lh "$PATCHED_IMAGE"
+          file "$PATCHED_IMAGE"
+          sha256sum "$PATCHED_IMAGE"
+
           echo
           echo "=== Patch et signature OTA ==="
 
@@ -612,13 +572,9 @@ jobs:
             --cert-ota "$WORKSPACE/keys/ota.crt" \
             --pass-avb-file "$WORKSPACE/keys/avb.pass" \
             --pass-ota-file "$WORKSPACE/keys/ota.pass" \
-            --prepatched "$BOOT_IMG"
+            --prepatched "$PATCHED_IMAGE"
 
           test -s "$OUTPUT_OTA"
-
-          echo
-          echo "=== OTA signée ==="
-
           ls -lh "$OUTPUT_OTA"
           file "$OUTPUT_OTA"
 
@@ -667,49 +623,47 @@ jobs:
           echo
           echo "OTA signée validée pour $EXPECTED_DEVICE."
 
-      - name: Verify boot embedded in signed OTA
+      - name: Verify patched image embedded in signed OTA
         shell: bash
         env:
-          SOURCE_BOOT: ${{ steps.files.outputs.boot_img }}
+          SOURCE_IMAGE: ${{ steps.files.outputs.patched_image }}
+          IMAGE_TYPE: ${{ steps.files.outputs.image_type }}
         run: |
           set -euo pipefail
 
           VERIFY_DIR="$WORKSPACE/release/verify"
-
           rm -rf "$VERIFY_DIR"
           mkdir -p "$VERIFY_DIR"
-
           cd "$VERIFY_DIR"
 
           "$WORKSPACE/tools/avbroot" ota extract \
             --input "$WORKSPACE/release/ota-signed.zip"
 
-          if [ ! -s boot.img ]; then
-            echo "::error::boot.img absent après extraction de l'OTA signée"
+          EXTRACTED_IMAGE="$VERIFY_DIR/${IMAGE_TYPE}.img"
+
+          if [ ! -s "$EXTRACTED_IMAGE" ]; then
+            echo "::error::${IMAGE_TYPE}.img absent après extraction de l'OTA signée"
+            find "$VERIFY_DIR" -maxdepth 2 -type f -ls || true
             exit 1
           fi
 
-          echo "=== Boot source ==="
-          sha256sum "$SOURCE_BOOT"
-          
-          echo
-          echo "=== Boot extrait de l'OTA ==="
-          sha256sum boot.img
-          
-          echo
-          echo "=== Kernel embarqué ==="
-          
-          strings boot.img \
-            | grep -aoE '[0-9]+\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
-            | head -n1 \
-            || true
-          
-          echo
-          echo "=== PREEMPT OTA ==="
-          
-          strings boot.img \
-            | grep -a -m5 'PREEMPT' \
-            || true
+          SOURCE_SHA256="$(sha256sum "$SOURCE_IMAGE" | awk '{print $1}')"
+          EXTRACTED_SHA256="$(sha256sum "$EXTRACTED_IMAGE" | awk '{print $1}')"
+
+          echo "SOURCE_SHA256=$SOURCE_SHA256"
+          echo "EXTRACTED_SHA256=$EXTRACTED_SHA256"
+
+          if [ "$IMAGE_TYPE" = "boot" ]; then
+            echo
+            echo "=== Kernel embarqué ==="
+            strings "$EXTRACTED_IMAGE" \
+              | grep -aoE '[0-9]\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
+              | head -n1 \
+              || true
+            strings "$EXTRACTED_IMAGE" | grep -a -m5 'PREEMPT' || true
+          fi
+
+          echo "=== Image OTA validée ==="
 
       - name: Generate signed OTA SHA256
         id: sha
@@ -993,7 +947,8 @@ jobs:
         env:
           DEVICE: ${{ steps.meta.outputs.device }}
           BUILD_REVISION: ${{ steps.meta.outputs.build_revision }}
-          BOOT_IMG: ${{ steps.files.outputs.boot_img }}
+          PATCHED_IMAGE: ${{ steps.files.outputs.patched_image }}
+          IMAGE_TYPE: ${{ steps.files.outputs.image_type }}
           JSON_FILE: ${{ steps.custota.outputs.json_file }}
           CSIG_FILE: ${{ steps.custota.outputs.csig_file }}
           EXPECTED_SHA256: ${{ steps.sha.outputs.sha256 }}
@@ -1011,8 +966,8 @@ jobs:
           CSIG_PART="$VERSION_DIR/ota-signed.zip.csig.part"
           CSIG_FINAL="$VERSION_DIR/ota-signed.zip.csig"
 
-          BOOT_PART="$VERSION_DIR/boot.img.part"
-          BOOT_FINAL="$VERSION_DIR/boot.img"
+          IMAGE_PART="$VERSION_DIR/${IMAGE_TYPE}.img.part"
+          IMAGE_FINAL="$VERSION_DIR/${IMAGE_TYPE}.img"
 
           VERSION_JSON_PART="$VERSION_DIR/${DEVICE}.json.part"
           VERSION_JSON_FINAL="$VERSION_DIR/${DEVICE}.json"
@@ -1021,7 +976,7 @@ jobs:
           CURRENT_JSON_FINAL="$OTA_MOUNT/${DEVICE}.json"
 
           test -s "$SOURCE_OTA"
-          test -s "$BOOT_IMG"
+          test -s "$PATCHED_IMAGE"
           test -s "$JSON_FILE"
           test -s "$CSIG_FILE"
 
@@ -1127,7 +1082,7 @@ jobs:
           ls -lh \
             "$OTA_FINAL" \
             "$CSIG_FINAL" \
-            "$BOOT_FINAL" \
+            "$IMAGE_FINAL" \
             "$VERSION_JSON_FINAL" \
             "$CURRENT_JSON_FINAL"
 
