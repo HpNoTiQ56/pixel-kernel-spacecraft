@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       drive_folder_url:
-        description: "Lien du dossier Google Drive du build, ou directement du dossier Kernels"
+        description: "Lien du dossier Google Drive du build, ou directement du dossier Kernels. Si vide=LKM"
         required: true
         type: string
       ota_url:
@@ -494,6 +494,152 @@ jobs:
             echo "- Archive attendue : \`kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}.tar.xz\`"
           } >> "$GITHUB_STEP_SUMMARY"
           
+      - name: Install latest KernelSU-Next ksud and matching LKM
+        id: ksunext_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULL_VERSION: ${{ steps.stockkernel.outputs.release_suffix }}
+        run: |
+          set -euo pipefail
+
+          TOOLS_DIR="$WORKSPACE/tools/ksunext-latest"
+          RELEASE_JSON="$RUNNER_TEMP/ksunext-latest.json"
+
+          rm -rf "$TOOLS_DIR"
+          mkdir -p "$TOOLS_DIR"
+
+          echo "=== Dernière release KernelSU-Next ==="
+
+          curl             --fail             --silent             --show-error             --location             --retry 5             --retry-all-errors             --retry-delay 10             --header "Accept: application/vnd.github+json"             --header "Authorization: Bearer $GH_TOKEN"             --header "X-GitHub-Api-Version: 2022-11-28"             "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest"             --output "$RELEASE_JSON"
+
+          RELEASE_TAG="$(jq -r '.tag_name // empty' "$RELEASE_JSON")"
+
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "::error::Impossible de déterminer la dernière release KernelSU-Next"
+            cat "$RELEASE_JSON"
+            exit 1
+          fi
+
+          echo "RELEASE_TAG=$RELEASE_TAG"
+          jq -r '.assets[].name' "$RELEASE_JSON"
+
+          KMI="$(
+            printf '%s\n' "$FULL_VERSION"               | grep -aoE 'android[0-9]+-[0-9]+\.[0-9]+'               | head -n1               || true
+          )"
+
+          if [ -z "$KMI" ]; then
+            echo "::error::KMI introuvable dans le suffixe kernel : $FULL_VERSION"
+            exit 1
+          fi
+
+          LKM_ASSET="aarch64_${KMI}_kernelsu.ko"
+
+          LKM_URL="$(
+            jq -r               --arg name "$LKM_ASSET"               '.assets[] | select(.name == $name) | .browser_download_url'               "$RELEASE_JSON"
+          )"
+
+          if [ -z "$LKM_URL" ]; then
+            echo "::error::LKM correspondant au KMI absent : $LKM_ASSET"
+            echo "Assets disponibles :"
+            jq -r '.assets[].name' "$RELEASE_JSON"
+            exit 1
+          fi
+
+          echo "=== Téléchargement du LKM $LKM_ASSET ==="
+
+          curl             --fail             --location             --retry 5             --retry-all-errors             --retry-delay 10             --header "Authorization: Bearer $GH_TOKEN"             "$LKM_URL"             --output "$TOOLS_DIR/kernelsu.ko"
+
+          test -s "$TOOLS_DIR/kernelsu.ko"
+
+          echo "=== Recherche de ksud hôte Linux x86_64 ==="
+
+          KSUD_ASSET_JSON="$(
+            jq -c '
+              [
+                .assets[]
+                | select(
+                    (.name | ascii_downcase | contains("ksud"))
+                    and
+                    (
+                      (.name | ascii_downcase | contains("x86_64"))
+                      or
+                      (.name | ascii_downcase | contains("x86-64"))
+                      or
+                      (.name | ascii_downcase | contains("amd64"))
+                    )
+                  )
+              ]
+              | .[0] // empty
+            ' "$RELEASE_JSON"
+          )"
+
+          if [ -z "$KSUD_ASSET_JSON" ]; then
+            echo "::error::Aucun asset ksud Linux x86_64 publié dans $RELEASE_TAG"
+            echo "Le workflow refuse d'utiliser un binaire Android arm64 sur le runner x86_64."
+            echo "Assets disponibles :"
+            jq -r '.assets[].name' "$RELEASE_JSON"
+            exit 1
+          fi
+
+          KSUD_ASSET="$(jq -r '.name' <<< "$KSUD_ASSET_JSON")"
+          KSUD_URL="$(jq -r '.browser_download_url' <<< "$KSUD_ASSET_JSON")"
+          KSUD_DOWNLOAD="$TOOLS_DIR/$KSUD_ASSET"
+
+          curl             --fail             --location             --retry 5             --retry-all-errors             --retry-delay 10             --header "Authorization: Bearer $GH_TOKEN"             "$KSUD_URL"             --output "$KSUD_DOWNLOAD"
+
+          test -s "$KSUD_DOWNLOAD"
+
+          case "$KSUD_ASSET" in
+            *.zip)
+              EXTRACT_DIR="$TOOLS_DIR/ksud-extract"
+              mkdir -p "$EXTRACT_DIR"
+              unzip -q "$KSUD_DOWNLOAD" -d "$EXTRACT_DIR"
+              KSUD_FOUND="$(find "$EXTRACT_DIR" -type f -name ksud -print -quit)"
+              ;;
+            *.tar.gz|*.tgz)
+              EXTRACT_DIR="$TOOLS_DIR/ksud-extract"
+              mkdir -p "$EXTRACT_DIR"
+              tar -xzf "$KSUD_DOWNLOAD" -C "$EXTRACT_DIR"
+              KSUD_FOUND="$(find "$EXTRACT_DIR" -type f -name ksud -print -quit)"
+              ;;
+            *)
+              KSUD_FOUND="$KSUD_DOWNLOAD"
+              ;;
+          esac
+
+          if [ -z "${KSUD_FOUND:-}" ] || [ ! -s "$KSUD_FOUND" ]; then
+            echo "::error::Binaire ksud introuvable après téléchargement"
+            exit 1
+          fi
+
+          cp "$KSUD_FOUND" "$TOOLS_DIR/ksud"
+          chmod 700 "$TOOLS_DIR/ksud"
+
+          file "$TOOLS_DIR/ksud"
+          "$TOOLS_DIR/ksud" --version
+
+          LKM_SHA256="$(sha256sum "$TOOLS_DIR/kernelsu.ko" | awk '{print $1}')"
+
+          {
+            echo "release_tag=$RELEASE_TAG"
+            echo "kmi=$KMI"
+            echo "ksud=$TOOLS_DIR/ksud"
+            echo "module=$TOOLS_DIR/kernelsu.ko"
+            echo "module_asset=$LKM_ASSET"
+            echo "module_sha256=$LKM_SHA256"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### KernelSU-Next latest"
+            echo
+            echo "- Release : \`$RELEASE_TAG\`"
+            echo "- KMI : \`$KMI\`"
+            echo "- ksud : \`$KSUD_ASSET\`"
+            echo "- LKM : \`$LKM_ASSET\`"
+            echo "- SHA256 LKM : \`$LKM_SHA256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Find exact kernel archive recursively in Drive
         id: kernel
         shell: bash
