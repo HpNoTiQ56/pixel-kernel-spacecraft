@@ -326,37 +326,42 @@ jobs:
           test -s "$BOOT_IMG"
 
           FULL_VERSION="$(
-            strings "$BOOT_IMG" |
-            grep -a -m1 '^Linux version '
-          )"
-
-          RELEASE_SUFFIX="$(
-            printf '%s\n' "$FULL_VERSION" |
-            grep -aoE -- '-android[^ )]+' |
-            head -n1
-          )"
-
-          KERNEL_BUILD_ID="$(
-            printf '%s\n' "$FULL_VERSION" |
-            grep -aoE -- '-ab[0-9]+' |
-            head -n1 |
-            sed 's/^-ab//'
-          )"
-
-          PREEMPT_LINE="$(
-            strings "$BOOT_IMG" |
-            grep -a -m1 '^#1 SMP PREEMPT '
-          )"
-
-          BUILD_TIMESTAMP="$(
-            printf '%s\n' "$PREEMPT_LINE" |
-            sed 's/^#1 SMP PREEMPT //'
+            strings "$BOOT_IMG" \
+              | grep -a -m1 'Linux version ' \
+              || true
           )"
 
           if [ -z "$FULL_VERSION" ]; then
             echo "::error::Chaîne Linux version introuvable dans boot.img"
             exit 1
           fi
+
+          RELEASE_SUFFIX="$(
+            printf '%s\n' "$FULL_VERSION" \
+              | grep -aoE -- '-android[^ )]+' \
+              | head -n1 \
+              || true
+          )"
+
+          KERNEL_BUILD_ID="$(
+            printf '%s\n' "$FULL_VERSION" \
+              | grep -aoE 'ab[0-9]+' \
+              | head -n1 \
+              | sed 's/^ab//' \
+              || true
+          )"
+
+          PREEMPT_LINE="$(
+            strings "$BOOT_IMG" \
+              | grep -a -m1 '^#1 SMP PREEMPT ' \
+              || true
+          )"
+
+          BUILD_TIMESTAMP="$(
+            printf '%s\n' "$PREEMPT_LINE" \
+              | sed 's/^#1 SMP PREEMPT //' \
+              || true
+          )"
 
           if [ -z "$RELEASE_SUFFIX" ]; then
             echo "::error::Suffixe kernel stock introuvable"
@@ -365,7 +370,7 @@ jobs:
           fi
 
           if [ -z "$KERNEL_BUILD_ID" ]; then
-            echo "::error::Identifiant -abXXXXXXXX introuvable dans le kernel stock"
+            echo "::error::Build ID abXXXXXXXX introuvable"
             echo "FULL_VERSION=$FULL_VERSION"
             exit 1
           fi
@@ -383,7 +388,10 @@ jobs:
           esac
 
           SOURCE_DATE_EPOCH="$(
-            date --utc --date="$BUILD_TIMESTAMP" +%s
+            date \
+              --utc \
+              --date="$BUILD_TIMESTAMP" \
+              +%s
           )"
 
           {
@@ -393,20 +401,25 @@ jobs:
             echo "kernel_build_id=$KERNEL_BUILD_ID"
           } >> "$GITHUB_OUTPUT"
 
+          echo
+          echo "=== Kernel stock OTA ==="
           echo "FULL_VERSION=$FULL_VERSION"
           echo "RELEASE_SUFFIX=$RELEASE_SUFFIX"
           echo "KERNEL_BUILD_ID=$KERNEL_BUILD_ID"
           echo "PREEMPT_LINE=$PREEMPT_LINE"
           echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP"
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
-          echo "Archive exigée: kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz"
+
+          echo
+          echo "=== Archive kernel attendue ==="
+          echo "kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz"
 
           {
             echo "### Kernel requis par l'OTA"
             echo
-            echo "- Famille: \`$KERNEL_FAMILY\`"
-            echo "- Build ID: \`$KERNEL_BUILD_ID\`"
-            echo "- Archive attendue: \`kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz\`"
+            echo "- Famille : \`$KERNEL_FAMILY\`"
+            echo "- Build ID : \`$KERNEL_BUILD_ID\`"
+            echo "- Archive : \`kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Find exact kernel archive recursively in Drive
