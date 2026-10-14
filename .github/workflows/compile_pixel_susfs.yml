@@ -1491,36 +1491,154 @@ jobs:
         run: |
           set -euo pipefail
 
-          FULL_VERSION="$(strings "$BOOT_IMG" | grep -a -m1 'Linux version ' || true)"
-          BOOTLOADER_VERSION="$(strings "$ABL_IMG" | grep -a -m1 -E '^spacecraft-[0-9]+\.[0-9]+-[0-9]+$' || true)"
-          GKI_BUILD_ID="$(printf '%s\n' "$FULL_VERSION" | grep -aoE 'ab[0-9]+' | head -n1 | sed 's/^ab//' || true)"
-          SPACECRAFT_BUILD_ID="$(printf '%s\n' "$BOOTLOADER_VERSION" | grep -aoE '[0-9]+$' || true)"
-          KMI="$(printf '%s\n' "$FULL_VERSION" | grep -aoE 'android[0-9]+-[0-9]+\.[0-9]+' | head -n1 || true)"
+          test -s "$BOOT_IMG"
+          test -s "$ABL_IMG"
 
-          SPL="$(
-            strings "$BOOT_IMG"               | awk '/com.android.build.boot.security_patch/ { getline; print; exit }'               || true
+          echo "=== Analyse boot.img ==="
+
+          FULL_VERSION="$(
+            strings "$BOOT_IMG" \
+              | grep -a -m1 'Linux version ' \
+              || true
           )"
 
-          test -n "$FULL_VERSION"
-          test -n "$GKI_BUILD_ID"
-          test -n "$BOOTLOADER_VERSION"
-          test -n "$SPACECRAFT_BUILD_ID"
-          test -n "$KMI"
-          test -n "$SPL"
+          if [ -z "$FULL_VERSION" ]; then
+            echo "::error::Linux version introuvable dans boot.img"
+
+            strings "$BOOT_IMG" \
+              | grep -a -m20 -E 'android[0-9]+|PREEMPT|kleaf|ab[0-9]+' \
+              || true
+
+            exit 1
+          fi
+
+          echo "FULL_VERSION=$FULL_VERSION"
+
+          GKI_BUILD_ID="$(
+            printf '%s\n' "$FULL_VERSION" \
+              | grep -aoE 'ab[0-9]+' \
+              | head -n1 \
+              | sed 's/^ab//' \
+              || true
+          )"
+
+          KERNEL_SERIES="$(
+            printf '%s\n' "$FULL_VERSION" \
+              | grep -aoE '[0-9]+\.[0-9]+' \
+              | head -n1 \
+              || true
+          )"
+
+          ANDROID_KMI="$(
+            printf '%s\n' "$FULL_VERSION" \
+              | grep -aoE 'android[0-9]+-[0-9]+' \
+              | head -n1 \
+              || true
+          )"
+
+          if [ -z "$GKI_BUILD_ID" ]; then
+            echo "::error::GKI build ID introuvable"
+            echo "FULL_VERSION=$FULL_VERSION"
+            exit 1
+          fi
+
+          if [ -z "$KERNEL_SERIES" ]; then
+            echo "::error::Série kernel introuvable"
+            echo "FULL_VERSION=$FULL_VERSION"
+            exit 1
+          fi
+
+          if [ -z "$ANDROID_KMI" ]; then
+            echo "::error::Android KMI introuvable"
+            echo "FULL_VERSION=$FULL_VERSION"
+            exit 1
+          fi
+
+          KMI="${KERNEL_SERIES}-${ANDROID_KMI}"
+          LKM_KMI="${ANDROID_KMI}.${KERNEL_SERIES}"
+
+          echo
+          echo "=== Analyse abl.img ==="
+
+          BOOTLOADER_VERSION="$(
+            strings "$ABL_IMG" \
+              | grep -a -m1 -E '^spacecraft-[0-9]+\.[0-9]+-[0-9]+$' \
+              || true
+          )"
+
+          if [ -z "$BOOTLOADER_VERSION" ]; then
+            echo "::error::Version Spacecraft introuvable dans abl.img"
+
+            strings "$ABL_IMG" \
+              | grep -a -m50 -E -i 'spacecraft|bootloader|[0-9]{7,8}' \
+              || true
+
+            exit 1
+          fi
+
+          SPACECRAFT_BUILD_ID="$(
+            printf '%s\n' "$BOOTLOADER_VERSION" \
+              | grep -aoE '[0-9]+$' \
+              || true
+          )"
+
+          if [ -z "$SPACECRAFT_BUILD_ID" ]; then
+            echo "::error::Build ID Spacecraft introuvable"
+            echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
+            exit 1
+          fi
+
+          echo
+          echo "=== Extraction SPL ==="
+
+          SPL="$(
+            strings "$BOOT_IMG" \
+              | awk '
+                  /com.android.build.boot.security_patch/ {
+                    getline
+                    print
+                    exit
+                  }
+                ' \
+              || true
+          )"
+
+          if [ -z "$SPL" ]; then
+            echo "::error::SPL introuvable dans boot.img"
+
+            strings "$BOOT_IMG" \
+              | grep -a -m20 -E 'security_patch|20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
+              || true
+
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo "MÉTADONNÉES OTA"
+          echo "========================================"
+          echo
+          echo "FULL_VERSION=$FULL_VERSION"
+          echo "GKI_BUILD_ID=$GKI_BUILD_ID"
+          echo "KERNEL_SERIES=$KERNEL_SERIES"
+          echo "ANDROID_KMI=$ANDROID_KMI"
+          echo "KMI=$KMI"
+          echo "LKM_KMI=$LKM_KMI"
+          echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
+          echo "SPACECRAFT_BUILD_ID=$SPACECRAFT_BUILD_ID"
+          echo "SPL=$SPL"
 
           {
             echo "full_version=$FULL_VERSION"
             echo "gki_build_id=$GKI_BUILD_ID"
-            echo "spacecraft_build_id=$SPACECRAFT_BUILD_ID"
-            echo "bootloader_version=$BOOTLOADER_VERSION"
+            echo "kernel_series=$KERNEL_SERIES"
+            echo "android_kmi=$ANDROID_KMI"
             echo "kmi=$KMI"
+            echo "lkm_kmi=$LKM_KMI"
+            echo "bootloader_version=$BOOTLOADER_VERSION"
+            echo "spacecraft_build_id=$SPACECRAFT_BUILD_ID"
             echo "spl=$SPL"
           } >> "$GITHUB_OUTPUT"
-
-          echo "FULL_VERSION=$FULL_VERSION"
-          echo "KMI=$KMI"
-          echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
-          echo "SPL=$SPL"
 
       - name: Install latest KernelSU-Next ksud and matching LKM
         id: ksunext
