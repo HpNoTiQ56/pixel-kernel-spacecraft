@@ -1610,18 +1610,23 @@ jobs:
             echo "lkm_asset=$LKM_ASSET"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Download latest KernelSU-Next dev artifacts
+      - name: Download latest KernelSU-Next dev ksud and KSU LKM
         id: ksunext
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.KSU_DEV_TOKEN }}
-          LKM_ASSET: ${{ steps.ota.outputs.lkm_asset }}
+          ANDROID_VERSION: ${{ steps.ota.outputs.android_version }}
+          KERNEL_SERIES: ${{ steps.ota.outputs.kernel_series }}
+          EXPECTED_LKM_FILE: ${{ steps.ota.outputs.lkm_asset }}
         run: |
           set -euo pipefail
 
           KSU_REPOSITORY="KernelSU-Next/KernelSU-Next"
           KSU_BRANCH="dev"
           KSU_WORKFLOW="build-manager-ci.yml"
+
+          KSUD_ARTIFACT_NAME="ksud-x86_64-unknown-linux-musl"
+          KSU_LKM_ARTIFACT_NAME="aarch64-${ANDROID_VERSION}-${KERNEL_SERIES}-ksu-lkm"
 
           TOOLS_DIR="$WORKSPACE/tools/ksunext"
           DOWNLOAD_DIR="$RUNNER_TEMP/ksunext-dev-artifacts"
@@ -1630,12 +1635,21 @@ jobs:
 
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::Secret KSU_DEV_TOKEN absent"
-            echo "::error::Un token GitHub avec accès en lecture aux Actions de KernelSU-Next est requis pour télécharger les artifacts."
             exit 1
           fi
 
-          if [ -z "${LKM_ASSET:-}" ]; then
-            echo "::error::LKM_ASSET vide"
+          if [ -z "${ANDROID_VERSION:-}" ]; then
+            echo "::error::ANDROID_VERSION vide"
+            exit 1
+          fi
+
+          if [ -z "${KERNEL_SERIES:-}" ]; then
+            echo "::error::KERNEL_SERIES vide"
+            exit 1
+          fi
+
+          if [ -z "${EXPECTED_LKM_FILE:-}" ]; then
+            echo "::error::EXPECTED_LKM_FILE vide"
             exit 1
           fi
 
@@ -1661,16 +1675,42 @@ jobs:
               --output "$output"
           }
 
+          download_artifact() {
+            local artifact_id="$1"
+            local destination="$2"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --location \
+              --retry 5 \
+              --retry-all-errors \
+              --retry-delay 10 \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${KSU_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+              --output "$destination"
+
+            test -s "$destination"
+            unzip -tq "$destination"
+          }
+
           echo "========================================"
           echo "KernelSU-Next dev"
           echo "========================================"
-          echo "Repository : $KSU_REPOSITORY"
-          echo "Branche    : $KSU_BRANCH"
-          echo "Workflow   : $KSU_WORKFLOW"
-          echo "LKM attendu: $LKM_ASSET"
+          echo "Repository       : $KSU_REPOSITORY"
+          echo "Branche          : $KSU_BRANCH"
+          echo "Workflow         : $KSU_WORKFLOW"
+          echo "Android          : $ANDROID_VERSION"
+          echo "Kernel           : $KERNEL_SERIES"
+          echo "Artifact ksud    : $KSUD_ARTIFACT_NAME"
+          echo "Artifact KSU LKM : $KSU_LKM_ARTIFACT_NAME"
+          echo "Fichier LKM      : $EXPECTED_LKM_FILE"
 
           echo
-          echo "=== Dernier run dev réussi ==="
+          echo "=== Recherche du dernier run dev réussi ==="
 
           api_get \
             "https://api.github.com/repos/${KSU_REPOSITORY}/actions/workflows/${KSU_WORKFLOW}/runs?branch=${KSU_BRANCH}&status=success&per_page=20" \
@@ -1694,6 +1734,11 @@ jobs:
             ' "$RUNS_JSON"
           )"
 
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::Aucun run dev réussi trouvé pour $KSU_WORKFLOW"
+            exit 1
+          fi
+
           HEAD_SHA="$(
             jq -r \
               --argjson run_id "$RUN_ID" \
@@ -1715,34 +1760,13 @@ jobs:
               "$RUNS_JSON"
           )"
 
-          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
-            echo "::error::Aucun run dev réussi trouvé pour $KSU_WORKFLOW"
-            jq -r '
-              .workflow_runs[]
-              | [
-                  .id,
-                  .head_branch,
-                  .status,
-                  .conclusion,
-                  .run_number
-                ]
-              | @tsv
-            ' "$RUNS_JSON" || true
-            exit 1
-          fi
-
-          if [ -z "$HEAD_SHA" ] || [ "$HEAD_SHA" = "null" ]; then
-            echo "::error::Commit du run introuvable"
-            exit 1
-          fi
-
           echo "RUN_ID=$RUN_ID"
           echo "RUN_NUMBER=$RUN_NUMBER"
           echo "HEAD_SHA=$HEAD_SHA"
           echo "RUN_URL=$RUN_URL"
 
           echo
-          echo "=== Artifacts du run ==="
+          echo "=== Lecture des artifacts du run ==="
 
           api_get \
             "https://api.github.com/repos/${KSU_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
@@ -1759,128 +1783,69 @@ jobs:
             | @tsv
           ' "$ARTIFACTS_JSON"
 
+          echo
+          echo "=== Sélection exacte de ksud ==="
+
           KSUD_ARTIFACT_ID="$(
-            jq -r '
-              [
-                .artifacts[]
-                | select(
-                    .expired == false
-                    and
-                    (
-                      .name == "ksud-x86_64-unknown-linux-musl"
-                      or
-                      (
-                        (.name | ascii_downcase | contains("ksud"))
-                        and
-                        (
-                          (.name | ascii_downcase | contains("x86_64"))
-                          or
-                          (.name | ascii_downcase | contains("amd64"))
-                        )
-                        and
-                        (.name | ascii_downcase | contains("musl"))
-                      )
-                    )
-                  )
-              ]
-              | .[0].id // empty
-            ' "$ARTIFACTS_JSON"
-          )"
-
-          KSUD_ARTIFACT_NAME="$(
             jq -r \
-              --argjson artifact_id "$KSUD_ARTIFACT_ID" \
-              '.artifacts[] | select(.id == $artifact_id) | .name' \
-              "$ARTIFACTS_JSON"
-          )"
-
-          ANDROID_VERSION="$(
-            printf '%s\n' "$LKM_ASSET" \
-              | sed -nE \
-                  's/^aarch64_(android[0-9]+)-[0-9]+\.[0-9]+_kernelsu\.ko$/\1/p'
-          )"
-
-          KERNEL_SERIES="$(
-            printf '%s\n' "$LKM_ASSET" \
-              | sed -nE \
-                  's/^aarch64_android[0-9]+-([0-9]+\.[0-9]+)_kernelsu\.ko$/\1/p'
-          )"
-
-          if [ -z "$ANDROID_VERSION" ] || [ -z "$KERNEL_SERIES" ]; then
-            echo "::error::Nom de LKM non reconnu : $LKM_ASSET"
-            exit 1
-          fi
-
-          LKM_ARTIFACT_ID="$(
-            jq -r \
-              --arg android "$ANDROID_VERSION" \
-              --arg series "$KERNEL_SERIES" \
+              --arg name "$KSUD_ARTIFACT_NAME" \
               '
                 [
                   .artifacts[]
-                    | select(
-                        .expired == false
-                        and
-                        (.name | ascii_downcase | contains($android))
-                        and
-                        (.name | ascii_downcase | contains($series))
-                        and
-                        (
-                          (.name | ascii_downcase | contains("lkm"))
-                          or
-                          (.name | ascii_downcase | contains("kernelsu"))
-                        )
-                      )
+                  | select(
+                      .expired == false
+                      and
+                      .name == $name
+                    )
                 ]
                 | .[0].id // empty
               ' "$ARTIFACTS_JSON"
           )"
 
-          LKM_ARTIFACT_NAME="$(
+          echo
+          echo "=== Sélection exacte du KernelSU LKM ==="
+
+          KSU_LKM_ARTIFACT_ID="$(
             jq -r \
-              --argjson artifact_id "$LKM_ARTIFACT_ID" \
-              '.artifacts[] | select(.id == $artifact_id) | .name' \
-              "$ARTIFACTS_JSON"
+              --arg name "$KSU_LKM_ARTIFACT_NAME" \
+              '
+                [
+                  .artifacts[]
+                  | select(
+                      .expired == false
+                      and
+                      .name == $name
+                    )
+                ]
+                | .[0].id // empty
+              ' "$ARTIFACTS_JSON"
           )"
 
           if [ -z "$KSUD_ARTIFACT_ID" ]; then
-            echo "::error::Artifact ksud x86_64 musl introuvable dans le run $RUN_ID"
+            echo "::error::Artifact ksud absent : $KSUD_ARTIFACT_NAME"
             exit 1
           fi
 
-          if [ -z "$LKM_ARTIFACT_ID" ]; then
-            echo "::error::Artifact LKM $ANDROID_VERSION / $KERNEL_SERIES introuvable dans le run $RUN_ID"
+          if [ -z "$KSU_LKM_ARTIFACT_ID" ]; then
+            echo "::error::Artifact KernelSU LKM absent : $KSU_LKM_ARTIFACT_NAME"
+            echo
+            echo "Artifacts LKM disponibles :"
+
+            jq -r '
+              .artifacts[]
+              | select(
+                  .expired == false
+                  and
+                  (.name | contains("-lkm"))
+                )
+              | .name
+            ' "$ARTIFACTS_JSON"
+
             exit 1
           fi
 
-          echo
-          echo "=== Artifacts sélectionnés ==="
           echo "KSUD_ARTIFACT_ID=$KSUD_ARTIFACT_ID"
-          echo "KSUD_ARTIFACT_NAME=$KSUD_ARTIFACT_NAME"
-          echo "LKM_ARTIFACT_ID=$LKM_ARTIFACT_ID"
-          echo "LKM_ARTIFACT_NAME=$LKM_ARTIFACT_NAME"
-
-          download_artifact() {
-            local artifact_id="$1"
-            local destination="$2"
-
-            curl \
-              --fail \
-              --silent \
-              --show-error \
-              --location \
-              --retry 5 \
-              --retry-all-errors \
-              --retry-delay 10 \
-              --header "Accept: application/vnd.github+json" \
-              --header "Authorization: Bearer $GH_TOKEN" \
-              --header "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${KSU_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
-              --output "$destination"
-
-            test -s "$destination"
-            unzip -tq "$destination"
-          }
+          echo "KSU_LKM_ARTIFACT_ID=$KSU_LKM_ARTIFACT_ID"
 
           echo
           echo "=== Téléchargement ksud dev ==="
@@ -1896,27 +1861,23 @@ jobs:
 
           unzip -q "$KSUD_ZIP" -d "$KSUD_DIR"
 
+          echo "=== Contenu de l'artifact ksud ==="
+          find "$KSUD_DIR" -type f -ls
+
           KSUD_FOUND="$(
             find "$KSUD_DIR" \
               -type f \
-              -name 'ksud' \
+              \( \
+                -name "ksud" \
+                -o \
+                -name "$KSUD_ARTIFACT_NAME" \
+              \) \
               -print \
               -quit
           )"
 
-          if [ -z "$KSUD_FOUND" ]; then
-            KSUD_FOUND="$(
-              find "$KSUD_DIR" \
-                -type f \
-                -name 'ksud-x86_64-unknown-linux-musl' \
-                -print \
-                -quit
-            )"
-          fi
-
           if [ -z "$KSUD_FOUND" ] || [ ! -s "$KSUD_FOUND" ]; then
             echo "::error::Binaire ksud introuvable dans $KSUD_ARTIFACT_NAME"
-            find "$KSUD_DIR" -type f -ls || true
             exit 1
           fi
 
@@ -1924,45 +1885,69 @@ jobs:
           chmod 700 "$TOOLS_DIR/ksud"
 
           echo
-          echo "=== Téléchargement LKM dev ==="
+          echo "=== Téléchargement KernelSU LKM dev ==="
 
-          LKM_ZIP="$DOWNLOAD_DIR/lkm.zip"
-          LKM_DIR="$DOWNLOAD_DIR/lkm"
+          KSU_LKM_ZIP="$DOWNLOAD_DIR/ksu-lkm.zip"
+          KSU_LKM_DIR="$DOWNLOAD_DIR/ksu-lkm"
 
-          mkdir -p "$LKM_DIR"
+          mkdir -p "$KSU_LKM_DIR"
 
           download_artifact \
-            "$LKM_ARTIFACT_ID" \
-            "$LKM_ZIP"
+            "$KSU_LKM_ARTIFACT_ID" \
+            "$KSU_LKM_ZIP"
 
-          unzip -q "$LKM_ZIP" -d "$LKM_DIR"
+          unzip -q "$KSU_LKM_ZIP" -d "$KSU_LKM_DIR"
 
-          LKM_FOUND="$(
-            find "$LKM_DIR" \
+          echo "=== Contenu de l'artifact KernelSU LKM ==="
+          find "$KSU_LKM_DIR" -type f -ls
+
+          KSU_LKM_FOUND="$(
+            find "$KSU_LKM_DIR" \
               -type f \
-              -name "$LKM_ASSET" \
+              -name "$EXPECTED_LKM_FILE" \
               -print \
               -quit
           )"
 
-          if [ -z "$LKM_FOUND" ] || [ ! -s "$LKM_FOUND" ]; then
-            echo "::error::$LKM_ASSET introuvable dans $LKM_ARTIFACT_NAME"
-            find "$LKM_DIR" -type f -ls || true
+          if [ -z "$KSU_LKM_FOUND" ]; then
+            KSU_LKM_FOUND="$(
+              find "$KSU_LKM_DIR" \
+                -type f \
+                -name '*_kernelsu.ko' \
+                -print \
+                -quit
+            )"
+          fi
+
+          if [ -z "$KSU_LKM_FOUND" ] || [ ! -s "$KSU_LKM_FOUND" ]; then
+            echo "::error::KernelSU LKM introuvable dans $KSU_LKM_ARTIFACT_NAME"
+            find "$KSU_LKM_DIR" -type f -ls || true
             exit 1
           fi
 
-          cp "$LKM_FOUND" "$TOOLS_DIR/kernelsu.ko"
+          FOUND_LKM_BASENAME="$(basename "$KSU_LKM_FOUND")"
+
+          if [ "$FOUND_LKM_BASENAME" != "$EXPECTED_LKM_FILE" ]; then
+            echo "::error::Le LKM trouvé ne correspond pas au LKM attendu"
+            echo "Attendu : $EXPECTED_LKM_FILE"
+            echo "Trouvé  : $FOUND_LKM_BASENAME"
+            exit 1
+          fi
+
+          cp "$KSU_LKM_FOUND" "$TOOLS_DIR/kernelsu.ko"
 
           echo
           echo "=== Vérification ksud dev ==="
 
+          test -x "$TOOLS_DIR/ksud"
           file "$TOOLS_DIR/ksud"
           "$TOOLS_DIR/ksud" --version
           "$TOOLS_DIR/ksud" boot-patch --help
 
           echo
-          echo "=== Vérification LKM dev ==="
+          echo "=== Vérification KernelSU LKM dev ==="
 
+          test -s "$TOOLS_DIR/kernelsu.ko"
           ls -lh "$TOOLS_DIR/kernelsu.ko"
           file "$TOOLS_DIR/kernelsu.ko"
 
@@ -1971,13 +1956,13 @@ jobs:
               | awk '{print $1}'
           )"
 
-          LKM_SHA256="$(
+          KSU_LKM_SHA256="$(
             sha256sum "$TOOLS_DIR/kernelsu.ko" \
               | awk '{print $1}'
           )"
 
           echo "KSUD_SHA256=$KSUD_SHA256"
-          echo "LKM_SHA256=$LKM_SHA256"
+          echo "KSU_LKM_SHA256=$KSU_LKM_SHA256"
 
           {
             echo "release_tag=dev-${HEAD_SHA:0:12}"
@@ -1992,9 +1977,9 @@ jobs:
             echo "ksud_sha256=$KSUD_SHA256"
 
             echo "module=$TOOLS_DIR/kernelsu.ko"
-            echo "module_asset=$LKM_ASSET"
-            echo "module_artifact=$LKM_ARTIFACT_NAME"
-            echo "module_sha256=$LKM_SHA256"
+            echo "module_asset=$FOUND_LKM_BASENAME"
+            echo "module_artifact=$KSU_LKM_ARTIFACT_NAME"
+            echo "module_sha256=$KSU_LKM_SHA256"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -2003,10 +1988,10 @@ jobs:
             echo "- Commit : \`$HEAD_SHA\`"
             echo "- Run : \`$RUN_NUMBER\`"
             echo "- ksud : \`$KSUD_ARTIFACT_NAME\`"
-            echo "- LKM : \`$LKM_ASSET\`"
-            echo "- Artifact LKM : \`$LKM_ARTIFACT_NAME\`"
+            echo "- KernelSU LKM artifact : \`$KSU_LKM_ARTIFACT_NAME\`"
+            echo "- KernelSU LKM : \`$FOUND_LKM_BASENAME\`"
             echo "- SHA256 ksud : \`$KSUD_SHA256\`"
-            echo "- SHA256 LKM : \`$LKM_SHA256\`"
+            echo "- SHA256 KernelSU LKM : \`$KSU_LKM_SHA256\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Patch init_boot with KernelSU-Next
