@@ -273,7 +273,7 @@ jobs:
           test -x "$MAGISKBOOT"
           echo "MagiskBoot installé"
 
-      - name: Extract boot image from OTA
+      - name: Extract boot and ABL images from OTA
         id: ota
         shell: bash
         env:
@@ -282,48 +282,73 @@ jobs:
           set -euo pipefail
 
           PAYLOAD_DUMPER="$WORKSPACE/tools/payload-dumper-venv/bin/payload_dumper"
-          BOOT_OUTPUT_DIR="$WORKSPACE/ota"
+          OTA_OUTPUT_DIR="$WORKSPACE/ota"
 
-          test -x "$PAYLOAD_DUMPER"
+          if [ ! -x "$PAYLOAD_DUMPER" ]; then
+            echo "::error::payload_dumper n'est pas installé : $PAYLOAD_DUMPER"
+            exit 1
+          fi
 
           case "$OTA_URL" in
-            http://*|https://*) ;;
+            http://*|https://*)
+              ;;
             *)
-              echo "::error::URL OTA invalide: $OTA_URL"
+              echo "::error::URL OTA invalide : $OTA_URL"
               exit 1
               ;;
           esac
 
-          rm -rf "$BOOT_OUTPUT_DIR"
-          mkdir -p "$BOOT_OUTPUT_DIR"
-          cd "$BOOT_OUTPUT_DIR"
+          rm -rf "$OTA_OUTPUT_DIR"
+          mkdir -p "$OTA_OUTPUT_DIR"
 
-          echo "=== Extraction de boot depuis l'OTA distante ==="
-          echo "OTA: $OTA_URL"
+          cd "$OTA_OUTPUT_DIR"
 
-          "$PAYLOAD_DUMPER" --partitions boot "$OTA_URL"
+          echo "=== Extraction de boot et abl depuis l'OTA ==="
+          echo "OTA : $OTA_URL"
 
-          BOOT_IMG="$BOOT_OUTPUT_DIR/output/boot.img"
+          "$PAYLOAD_DUMPER" \
+            --partitions boot,abl \
+            "$OTA_URL"
+
+          BOOT_IMG="$OTA_OUTPUT_DIR/output/boot.img"
+          ABL_IMG="$OTA_OUTPUT_DIR/output/abl.img"
 
           if [ ! -s "$BOOT_IMG" ]; then
-            echo "::error::boot.img non extrait dans $BOOT_OUTPUT_DIR"
-            find "$BOOT_OUTPUT_DIR" -maxdepth 3 -type f -ls || true
+            echo "::error::boot.img n'a pas été extrait"
+            find "$OTA_OUTPUT_DIR" -maxdepth 3 -type f -ls || true
             exit 1
           fi
 
-          echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
-          ls -lh "$BOOT_IMG"
-          file "$BOOT_IMG"
+          if [ ! -s "$ABL_IMG" ]; then
+            echo "::error::abl.img n'a pas été extrait"
+            find "$OTA_OUTPUT_DIR" -maxdepth 3 -type f -ls || true
+            exit 1
+          fi
 
-      - name: Extract stock kernel metadata and build ID
+          {
+            echo "boot_img=$BOOT_IMG"
+            echo "abl_img=$ABL_IMG"
+          } >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "=== Images stock extraites ==="
+
+          ls -lh "$BOOT_IMG" "$ABL_IMG"
+          file "$BOOT_IMG" "$ABL_IMG"
+
+      - name: Extract stock kernel and Spacecraft metadata
         id: stockkernel
         shell: bash
         env:
           BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
+          ABL_IMG: ${{ steps.ota.outputs.abl_img }}
         run: |
           set -euo pipefail
 
           test -s "$BOOT_IMG"
+          test -s "$ABL_IMG"
+
+          echo "=== Analyse de boot.img ==="
 
           FULL_VERSION="$(
             strings "$BOOT_IMG" \
@@ -331,8 +356,19 @@ jobs:
               || true
           )"
 
+          PREEMPT_LINE="$(
+            strings "$BOOT_IMG" \
+              | grep -a -m1 '^#1 SMP PREEMPT ' \
+              || true
+          )"
+
           if [ -z "$FULL_VERSION" ]; then
             echo "::error::Chaîne Linux version introuvable dans boot.img"
+            exit 1
+          fi
+
+          if [ -z "$PREEMPT_LINE" ]; then
+            echo "::error::Ligne PREEMPT introuvable dans boot.img"
             exit 1
           fi
 
@@ -343,7 +379,7 @@ jobs:
               || true
           )"
 
-          KERNEL_BUILD_ID="$(
+          GKI_BUILD_ID="$(
             printf '%s\n' "$FULL_VERSION" \
               | grep -aoE 'ab[0-9]+' \
               | head -n1 \
@@ -351,15 +387,37 @@ jobs:
               || true
           )"
 
-          PREEMPT_LINE="$(
-            strings "$BOOT_IMG" \
-              | grep -a -m1 '^#1 SMP PREEMPT ' \
+          BUILD_TIMESTAMP="$(
+            printf '%s\n' "$PREEMPT_LINE" \
+              | sed -E 's/^#1 SMP PREEMPT( DYNAMIC)? //' \
               || true
           )"
 
-          BUILD_TIMESTAMP="$(
-            printf '%s\n' "$PREEMPT_LINE" \
-              | sed 's/^#1 SMP PREEMPT //' \
+          echo
+          echo "=== Analyse de abl.img ==="
+
+          BOOTLOADER_VERSION="$(
+            strings "$ABL_IMG" \
+              | grep -a -m1 -E "^${KERNEL_FAMILY}-[0-9]+\.[0-9]+-[0-9]+$" \
+              || true
+          )"
+
+          if [ -z "$BOOTLOADER_VERSION" ]; then
+            echo "::error::Version du bootloader ${KERNEL_FAMILY} introuvable dans abl.img"
+            echo
+            echo "=== Candidats trouvés dans abl.img ==="
+
+            strings "$ABL_IMG" \
+              | grep -a -E -i "${KERNEL_FAMILY}|bootloader|[0-9]{7,8}" \
+              | head -n 100 \
+              || true
+
+            exit 1
+          fi
+
+          SPACECRAFT_BUILD_ID="$(
+            printf '%s\n' "$BOOTLOADER_VERSION" \
+              | grep -aoE '[0-9]+$' \
               || true
           )"
 
@@ -369,14 +427,20 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$KERNEL_BUILD_ID" ]; then
-            echo "::error::Build ID abXXXXXXXX introuvable"
+          if [ -z "$GKI_BUILD_ID" ]; then
+            echo "::error::Build ID GKI abXXXXXXXX introuvable"
             echo "FULL_VERSION=$FULL_VERSION"
             exit 1
           fi
 
           if [ -z "$BUILD_TIMESTAMP" ]; then
             echo "::error::Timestamp kernel stock introuvable"
+            exit 1
+          fi
+
+          if [ -z "$SPACECRAFT_BUILD_ID" ]; then
+            echo "::error::Révision Spacecraft introuvable"
+            echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
             exit 1
           fi
 
@@ -398,43 +462,51 @@ jobs:
             echo "release_suffix=$RELEASE_SUFFIX"
             echo "build_timestamp=$BUILD_TIMESTAMP"
             echo "source_date_epoch=$SOURCE_DATE_EPOCH"
-            echo "kernel_build_id=$KERNEL_BUILD_ID"
+            echo "gki_build_id=$GKI_BUILD_ID"
+            echo "spacecraft_build_id=$SPACECRAFT_BUILD_ID"
+            echo "bootloader_version=$BOOTLOADER_VERSION"
           } >> "$GITHUB_OUTPUT"
 
           echo
-          echo "=== Kernel stock OTA ==="
+          echo "========================================"
+          echo "MÉTADONNÉES OTA"
+          echo "========================================"
+          echo
           echo "FULL_VERSION=$FULL_VERSION"
           echo "RELEASE_SUFFIX=$RELEASE_SUFFIX"
-          echo "KERNEL_BUILD_ID=$KERNEL_BUILD_ID"
+          echo "GKI_BUILD_ID=$GKI_BUILD_ID"
           echo "PREEMPT_LINE=$PREEMPT_LINE"
           echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP"
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
-
           echo
-          echo "=== Archive kernel attendue ==="
-          echo "kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz"
+          echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
+          echo "SPACECRAFT_BUILD_ID=$SPACECRAFT_BUILD_ID"
+          echo
+          echo "Archive Drive attendue :"
+          echo "kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}.tar.xz"
 
           {
-            echo "### Kernel requis par l'OTA"
+            echo "### Métadonnées de l'OTA"
             echo
-            echo "- Famille : \`$KERNEL_FAMILY\`"
-            echo "- Build ID : \`$KERNEL_BUILD_ID\`"
-            echo "- Archive : \`kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz\`"
+            echo "- GKI build ID : \`$GKI_BUILD_ID\`"
+            echo "- Bootloader : \`$BOOTLOADER_VERSION\`"
+            echo "- Révision Spacecraft : \`$SPACECRAFT_BUILD_ID\`"
+            echo "- Archive attendue : \`kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}.tar.xz\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
+          
       - name: Find exact kernel archive recursively in Drive
         id: kernel
         shell: bash
         env:
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           ROOT_FOLDER_ID: ${{ steps.folder.outputs.folder_id }}
-          KERNEL_BUILD_ID: ${{ steps.stockkernel.outputs.kernel_build_id }}
+          SPACECRAFT_BUILD_ID: ${{ steps.stockkernel.outputs.spacecraft_build_id }}
         run: |
           set -euo pipefail
 
           DRIVE_API="https://www.googleapis.com/drive/v3/files"
           FOLDER_MIME="application/vnd.google-apps.folder"
-          EXPECTED_FILE="kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz"
+          EXPECTED_FILE="kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}.tar.xz"
           RESULTS_FILE="$RUNNER_TEMP/drive-kernel-results.jsonl"
 
           rm -f "$RESULTS_FILE"
@@ -531,7 +603,7 @@ jobs:
           {
             echo "file_id=$FILE_ID"
             echo "file_name=$FILE_NAME"
-            echo "file_revision=$KERNEL_BUILD_ID"
+            echo "file_revision=$SPACECRAFT_BUILD_ID"
           } >> "$GITHUB_OUTPUT"
 
           echo "=== Archive sélectionnée ==="
@@ -1158,7 +1230,7 @@ jobs:
           KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
           EXPECTED_TIMESTAMP: ${{ steps.stockkernel.outputs.build_timestamp }}
           EXPECTED_RELEASE_SUFFIX: ${{ steps.stockkernel.outputs.release_suffix }}
-          EXPECTED_BUILD_ID: ${{ steps.stockkernel.outputs.kernel_build_id }}
+          GKI_BUILD_ID: ${{ steps.stockkernel.outputs.gki_build_id }}
         run: |
           set -euo pipefail
 
@@ -1172,7 +1244,7 @@ jobs:
           echo "PREEMPT_LINE=$PREEMPT_LINE"
 
           grep -Fq -- "$EXPECTED_RELEASE_SUFFIX" <<< "$LINUX_VERSION"
-          grep -Fq -- "-ab${EXPECTED_BUILD_ID}" <<< "$LINUX_VERSION"
+          grep -Fq -- "-ab${GKI_BUILD_ID}" <<< "$LINUX_VERSION"
           grep -Fq -- '(kleaf@build-host)' <<< "$LINUX_VERSION"
 
           EXPECTED_PREEMPT="#1 SMP PREEMPT $EXPECTED_TIMESTAMP"
