@@ -1451,7 +1451,6 @@ jobs:
 
           rm -rf "$OTA_DIR"
           mkdir -p "$OTA_DIR"
-
           cd "$OTA_DIR"
 
           echo "=== Extraction de boot et init_boot ==="
@@ -1465,13 +1464,11 @@ jobs:
 
           if [ ! -s "$BOOT_IMG" ]; then
             echo "::error::boot.img absent après extraction"
-            find "$OTA_DIR" -maxdepth 3 -type f -ls || true
             exit 1
           fi
 
           if [ ! -s "$INIT_BOOT_IMG" ]; then
             echo "::error::init_boot.img absent après extraction"
-            find "$OTA_DIR" -maxdepth 3 -type f -ls || true
             exit 1
           fi
 
@@ -1486,8 +1483,9 @@ jobs:
 
           KERNEL_RELEASE="$(
             strings "$BOOT_IMG" \
-              | grep -aoE '[0-9]+\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
+              | grep -aoE 'Linux version [0-9]+\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
               | head -n1 \
+              | sed 's/^Linux version //' \
               || true
           )"
 
@@ -1495,7 +1493,7 @@ jobs:
             echo "::error::Version du kernel introuvable dans boot.img"
 
             strings "$BOOT_IMG" \
-              | grep -a -m20 -E 'android[0-9]+|PREEMPT|kleaf|ab[0-9]+' \
+              | grep -a -m20 -E 'Linux version|android[0-9]+|PREEMPT|kleaf|ab[0-9]+' \
               || true
 
             exit 1
@@ -1526,17 +1524,17 @@ jobs:
           )"
 
           if [ -z "$KERNEL_SERIES" ]; then
-            echo "::error::Série kernel introuvable dans : $KERNEL_RELEASE"
+            echo "::error::Série kernel introuvable : $KERNEL_RELEASE"
             exit 1
           fi
 
           if [ -z "$ANDROID_KMI" ]; then
-            echo "::error::Android KMI introuvable dans : $KERNEL_RELEASE"
+            echo "::error::Android KMI introuvable : $KERNEL_RELEASE"
             exit 1
           fi
 
           if [ -z "$GKI_BUILD_ID" ]; then
-            echo "::error::GKI Build ID introuvable dans : $KERNEL_RELEASE"
+            echo "::error::GKI Build ID introuvable : $KERNEL_RELEASE"
             exit 1
           fi
 
@@ -1555,7 +1553,7 @@ jobs:
           )"
 
           if ! printf '%s' "$BUILD_DATE_SHORT" | grep -Eq '^[0-9]{6}$'; then
-            echo "::error::Date YYMMDD introuvable dans le nom OTA : $OTA_FILENAME"
+            echo "::error::Date YYMMDD introuvable : $OTA_FILENAME"
             exit 1
           fi
 
@@ -1578,6 +1576,16 @@ jobs:
           {
             echo "boot_img=$BOOT_IMG"
             echo "init_boot_img=$INIT_BOOT_IMG"
+            echo "ota_filename=$OTA_FILENAME"
+            echo "spl=$SPL"
+            echo "kernel_release=$KERNEL_RELEASE"
+            echo "kernel_series=$KERNEL_SERIES"
+            echo "android_kmi=$ANDROID_KMI"
+            echo "gki_build_id=$GKI_BUILD_ID"
+            echo "kmi=$KMI"
+            echo "lkm_id=$LKM_ID"
+            echo "lkm_asset=$LKM_ASSET"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install KernelSU-Next v3.4.2 ksud and LKM
         id: ksunext
@@ -1694,6 +1702,7 @@ jobs:
           KSUD_BIN: ${{ steps.ksunext.outputs.ksud }}
           KSU_MODULE: ${{ steps.ksunext.outputs.module }}
           INIT_BOOT_IMG: ${{ steps.ota.outputs.init_boot_img }}
+          KMI: ${{ steps.ota.outputs.kmi }}
         run: |
           set -euo pipefail
 
