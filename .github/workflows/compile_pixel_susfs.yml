@@ -1464,11 +1464,13 @@ jobs:
 
           if [ ! -s "$BOOT_IMG" ]; then
             echo "::error::boot.img absent après extraction"
+            find "$OTA_DIR" -maxdepth 3 -type f -ls || true
             exit 1
           fi
 
           if [ ! -s "$INIT_BOOT_IMG" ]; then
             echo "::error::init_boot.img absent après extraction"
+            find "$OTA_DIR" -maxdepth 3 -type f -ls || true
             exit 1
           fi
 
@@ -1499,11 +1501,16 @@ jobs:
             exit 1
           fi
 
-          echo "KERNEL_RELEASE=$KERNEL_RELEASE"
-
           KERNEL_SERIES="$(
             printf '%s\n' "$KERNEL_RELEASE" \
               | grep -aoE '^[0-9]+\.[0-9]+' \
+              | head -n1 \
+              || true
+          )"
+
+          ANDROID_VERSION="$(
+            printf '%s\n' "$KERNEL_RELEASE" \
+              | grep -aoE 'android[0-9]+' \
               | head -n1 \
               || true
           )"
@@ -1528,6 +1535,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$ANDROID_VERSION" ]; then
+            echo "::error::Version Android introuvable : $KERNEL_RELEASE"
+            exit 1
+          fi
+
           if [ -z "$ANDROID_KMI" ]; then
             echo "::error::Android KMI introuvable : $KERNEL_RELEASE"
             exit 1
@@ -1538,8 +1550,17 @@ jobs:
             exit 1
           fi
 
+          #
+          # KMI attendu par ksud :
+          # 6.12-android16-6
+          #
           KMI="${KERNEL_SERIES}-${ANDROID_KMI}"
-          LKM_ID="${ANDROID_KMI}.${KERNEL_SERIES}"
+
+          #
+          # Convention des assets KernelSU-Next :
+          # aarch64_android16-6.12_kernelsu.ko
+          #
+          LKM_ID="${ANDROID_VERSION}-${KERNEL_SERIES}"
           LKM_ASSET="aarch64_${LKM_ID}_kernelsu.ko"
 
           OTA_URL_NO_QUERY="${OTA_URL%%\?*}"
@@ -1553,7 +1574,7 @@ jobs:
           )"
 
           if ! printf '%s' "$BUILD_DATE_SHORT" | grep -Eq '^[0-9]{6}$'; then
-            echo "::error::Date YYMMDD introuvable : $OTA_FILENAME"
+            echo "::error::Date YYMMDD introuvable dans le nom OTA : $OTA_FILENAME"
             exit 1
           fi
 
@@ -1567,6 +1588,7 @@ jobs:
           echo "SPL=$SPL"
           echo "KERNEL_RELEASE=$KERNEL_RELEASE"
           echo "KERNEL_SERIES=$KERNEL_SERIES"
+          echo "ANDROID_VERSION=$ANDROID_VERSION"
           echo "ANDROID_KMI=$ANDROID_KMI"
           echo "GKI_BUILD_ID=$GKI_BUILD_ID"
           echo "KMI=$KMI"
@@ -1580,6 +1602,7 @@ jobs:
             echo "spl=$SPL"
             echo "kernel_release=$KERNEL_RELEASE"
             echo "kernel_series=$KERNEL_SERIES"
+            echo "android_version=$ANDROID_VERSION"
             echo "android_kmi=$ANDROID_KMI"
             echo "gki_build_id=$GKI_BUILD_ID"
             echo "kmi=$KMI"
