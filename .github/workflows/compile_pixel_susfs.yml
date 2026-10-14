@@ -1,18 +1,19 @@
 name: Build Kernel
+
 on:
   workflow_dispatch:
     inputs:
       drive_folder_url:
-        description: "Lien du dossier Google Drive contenant kernels-*.tar.xz"
+        description: "Lien du dossier Google Drive du build, ou directement du dossier Kernels"
         required: true
         type: string
       ota_url:
         description: "URL OTA Google"
         required: true
         type: string
+
 jobs:
   download-and-extract:
-
     runs-on:
       - self-hosted
       - Linux
@@ -23,11 +24,12 @@ jobs:
 
     env:
       WORKSPACE: /home/aurelien/workspace
+      KERNEL_FAMILY: spacecraft
 
     steps:
       - name: Checkout workflow repository
         uses: actions/checkout@v4
-        
+
       - name: Verify runner
         shell: bash
         run: |
@@ -35,26 +37,19 @@ jobs:
 
           echo "=== HOST ==="
           hostname
-
           echo "=== USER ==="
           whoami
-
           echo "=== PWD ==="
           pwd
 
-          mkdir -p "$WORKSPACE/src"
-          mkdir -p "$WORKSPACE/build"
-          mkdir -p "$WORKSPACE/dist"
+          mkdir -p "$WORKSPACE/src" "$WORKSPACE/build" "$WORKSPACE/dist" "$WORKSPACE/tools"
 
-          echo
           echo "=== WORKSPACE ==="
           ls -lah "$WORKSPACE"
-
-          echo
           echo "=== DISK ==="
           df -h
 
-      - name: Extract folder ID
+      - name: Extract Drive folder ID
         id: folder
         shell: bash
         env:
@@ -73,8 +68,7 @@ jobs:
           fi
 
           echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
-
-          echo "Folder ID : $FOLDER_ID"
+          echo "Folder ID: $FOLDER_ID"
 
       - name: Get Google access token
         id: auth
@@ -87,7 +81,7 @@ jobs:
           set -euo pipefail
 
           RESPONSE="$(
-            curl --silent \
+            curl --silent --show-error --fail \
               --request POST \
               --data-urlencode "client_id=$GOOGLE_CLIENT_ID" \
               --data-urlencode "client_secret=$GOOGLE_CLIENT_SECRET" \
@@ -105,128 +99,9 @@ jobs:
           fi
 
           echo "::add-mask::$ACCESS_TOKEN"
-
           echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Find latest kernels archive
-        id: kernel
-        shell: bash
-        env:
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          FOLDER_ID: ${{ steps.folder.outputs.folder_id }}
-        run: |
-          set -euo pipefail
-
-          QUERY="'${FOLDER_ID}' in parents and trashed=false and name contains 'kernels-'"
-
-          RESPONSE="$(
-            curl --silent \
-              --get \
-              --header "Authorization: Bearer $ACCESS_TOKEN" \
-              --data-urlencode "q=$QUERY" \
-              --data-urlencode "orderBy=modifiedTime desc" \
-              --data-urlencode "pageSize=100" \
-              --data-urlencode "fields=files(id,name,size,modifiedTime)" \
-              "https://www.googleapis.com/drive/v3/files"
-          )"
-
-          FILE="$(
-            jq -c '
-              [
-                .files[]
-                | select(.name | test("^kernels-.*\\.tar\\.xz$"))
-              ]
-              | sort_by(.modifiedTime)
-              | reverse
-              | .[0]
-            ' <<< "$RESPONSE"
-          )"
-
-          if [ "$FILE" = "null" ]; then
-            echo "::error::Aucun kernels-*.tar.xz trouvé"
-            exit 1
-          fi
-
-          FILE_ID="$(jq -r '.id' <<< "$FILE")"
-          FILE_NAME="$(jq -r '.name' <<< "$FILE")"
-          FILE_SIZE="$(jq -r '.size' <<< "$FILE")"
-          FILE_DATE="$(jq -r '.modifiedTime' <<< "$FILE")"
-
-          echo "file_id=$FILE_ID" >> "$GITHUB_OUTPUT"
-          echo "file_name=$FILE_NAME" >> "$GITHUB_OUTPUT"
-
-          echo
-          echo "Archive sélectionnée :"
-          echo "Nom     : $FILE_NAME"
-          echo "Taille  : $FILE_SIZE"
-          echo "Date    : $FILE_DATE"
-
-      - name: Download latest archive
-        shell: bash
-        env:
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          FILE_ID: ${{ steps.kernel.outputs.file_id }}
-          FILE_NAME: ${{ steps.kernel.outputs.file_name }}
-        run: |
-          set -euo pipefail
-
-          ARCHIVE="$WORKSPACE/src/$FILE_NAME"
-
-          echo "Archive attendue :"
-          echo "$ARCHIVE"
-
-          if [ -f "$ARCHIVE" ] && [ -s "$ARCHIVE" ]; then
-
-            echo
-            echo "================================="
-            echo "ARCHIVE DEJA PRESENTE"
-            echo "================================="
-            echo
-
-            ls -lh "$ARCHIVE"
-            file "$ARCHIVE"
-
-          else
-
-            echo
-            echo "================================="
-            echo "TELECHARGEMENT"
-            echo "================================="
-            echo
-
-            curl \
-              --fail \
-              --location \
-              --retry 3 \
-              --retry-delay 5 \
-              --header "Authorization: Bearer $ACCESS_TOKEN" \
-              "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media" \
-              --output "$ARCHIVE"
-
-            echo
-            echo "Archive téléchargée :"
-
-            ls -lh "$ARCHIVE"
-            file "$ARCHIVE"
-
-          fi
-
-          echo
-          echo "=== Archives présentes ==="
-
-          ls -lh "$WORKSPACE/src"
-
-      - name: Cleanup old archives
-        shell: bash
-        run: |
-          find "$WORKSPACE/src" \
-            -name 'kernels-*.tar.xz' \
-            -mtime +90 \
-            -delete || true
-
-          echo "=== Archives conservées ==="
-          ls -lh "$WORKSPACE/src"
-          
+      # L'OTA doit être analysée AVANT la sélection du snapshot kernel.
       - name: Install payload-dumper
         shell: bash
         run: |
@@ -238,94 +113,83 @@ jobs:
 
           mkdir -p "$TOOLS_DIR"
 
-          echo "=== Installation de uv autonome ==="
-
           if [ ! -x "$UV_BIN" ]; then
             UV_INSTALL_DIR="$TOOLS_DIR/uv-install"
-
             rm -rf "$UV_INSTALL_DIR"
             mkdir -p "$UV_INSTALL_DIR"
 
-            curl \
-              --fail \
-              --location \
-              --silent \
-              --show-error \
+            curl --fail --location --silent --show-error \
               "https://astral.sh/uv/install.sh" \
               --output "$TOOLS_DIR/install-uv.sh"
 
-            env \
-              UV_INSTALL_DIR="$UV_INSTALL_DIR" \
-              UV_NO_MODIFY_PATH=1 \
+            env UV_INSTALL_DIR="$UV_INSTALL_DIR" UV_NO_MODIFY_PATH=1 \
               sh "$TOOLS_DIR/install-uv.sh"
 
             UV_FOUND="$(
-              find "$UV_INSTALL_DIR" \
-                -type f \
-                -name uv \
-                -perm -u+x \
-                -print \
-                -quit
+              find "$UV_INSTALL_DIR" -type f -name uv -perm -u+x -print -quit
             )"
 
             if [ -z "$UV_FOUND" ]; then
-              echo "::error::Le binaire uv n'a pas été installé."
+              echo "::error::Le binaire uv n'a pas été installé"
               find "$UV_INSTALL_DIR" -maxdepth 3 -type f -ls || true
               exit 1
             fi
 
             cp "$UV_FOUND" "$UV_BIN"
             chmod +x "$UV_BIN"
-
             rm -f "$TOOLS_DIR/install-uv.sh"
             rm -rf "$UV_INSTALL_DIR"
           fi
 
           "$UV_BIN" --version
 
-          echo
-          echo "=== Création de l'environnement Python isolé ==="
-
           if [ ! -x "$PAYLOAD_VENV/bin/python" ]; then
             rm -rf "$PAYLOAD_VENV"
-
-            "$UV_BIN" venv \
-              --python python3 \
-              "$PAYLOAD_VENV"
+            "$UV_BIN" venv --python python3 "$PAYLOAD_VENV"
           fi
-
-          echo
-          echo "=== Installation de payload-dumper ==="
 
           "$UV_BIN" pip install \
             --python "$PAYLOAD_VENV/bin/python" \
             --upgrade \
             "git+https://github.com/5ec1cff/payload-dumper.git"
 
-          echo
-          echo "=== Vérification ==="
-
           test -x "$PAYLOAD_VENV/bin/payload_dumper"
+          "$PAYLOAD_VENV/bin/payload_dumper" --help >/dev/null
 
-          "$PAYLOAD_VENV/bin/payload_dumper" --help
-          
       - name: Install extract-ikconfig
         shell: bash
         run: |
           set -euo pipefail
-      
-          mkdir -p "$WORKSPACE/tools"
-      
-          curl -L \
-            https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig \
-            -o "$WORKSPACE/tools/extract-ikconfig"
-      
-          chmod +x \
-            "$WORKSPACE/tools/extract-ikconfig"
-      
-          head -5 \
-            "$WORKSPACE/tools/extract-ikconfig"
-      
+
+          curl --fail --location --silent --show-error \
+            "https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig" \
+            --output "$WORKSPACE/tools/extract-ikconfig"
+
+          chmod +x "$WORKSPACE/tools/extract-ikconfig"
+          head -5 "$WORKSPACE/tools/extract-ikconfig"
+
+      - name: Install MagiskBoot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAGISKBOOT="$WORKSPACE/tools/magiskboot"
+
+          if [ ! -x "$MAGISKBOOT" ]; then
+            cd "$WORKSPACE/tools"
+
+            curl --fail --location --silent --show-error \
+              "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk" \
+              --output magisk.apk
+
+            unzip -o -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+            mv libmagiskboot.so magiskboot
+            chmod +x magiskboot
+          fi
+
+          test -x "$MAGISKBOOT"
+          echo "MagiskBoot installé"
+
       - name: Extract boot image from OTA
         id: ota
         shell: bash
@@ -337,82 +201,38 @@ jobs:
           PAYLOAD_DUMPER="$WORKSPACE/tools/payload-dumper-venv/bin/payload_dumper"
           BOOT_OUTPUT_DIR="$WORKSPACE/ota"
 
-          if [ ! -x "$PAYLOAD_DUMPER" ]; then
-            echo "::error::payload_dumper n'est pas installé : $PAYLOAD_DUMPER"
-            exit 1
-          fi
+          test -x "$PAYLOAD_DUMPER"
 
           case "$OTA_URL" in
-            http://*|https://*)
-              ;;
+            http://*|https://*) ;;
             *)
-              echo "::error::URL OTA invalide : $OTA_URL"
+              echo "::error::URL OTA invalide: $OTA_URL"
               exit 1
               ;;
           esac
 
           rm -rf "$BOOT_OUTPUT_DIR"
           mkdir -p "$BOOT_OUTPUT_DIR"
-
           cd "$BOOT_OUTPUT_DIR"
 
           echo "=== Extraction de boot depuis l'OTA distante ==="
-          echo "OTA : $OTA_URL"
+          echo "OTA: $OTA_URL"
 
-          "$PAYLOAD_DUMPER" \
-            --partitions boot \
-            "$OTA_URL"
+          "$PAYLOAD_DUMPER" --partitions boot "$OTA_URL"
 
           BOOT_IMG="$BOOT_OUTPUT_DIR/output/boot.img"
-          
+
           if [ ! -s "$BOOT_IMG" ]; then
-            echo "::error::boot.img n'a pas été extrait dans $BOOT_OUTPUT_DIR"
-            find "$BOOT_OUTPUT_DIR" \
-              -maxdepth 3 \
-              -type f \
-              -ls \
-              || true
+            echo "::error::boot.img non extrait dans $BOOT_OUTPUT_DIR"
+            find "$BOOT_OUTPUT_DIR" -maxdepth 3 -type f -ls || true
             exit 1
           fi
 
           echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
-
-          echo
-          echo "=== Boot stock extrait ==="
-
           ls -lh "$BOOT_IMG"
           file "$BOOT_IMG"
-          
-      - name: Install MagiskBoot
-        shell: bash
-        run: |
-          set -euo pipefail
-      
-          mkdir -p "$WORKSPACE/tools"
-      
-          if [ ! -x "$WORKSPACE/tools/magiskboot" ]; then
-      
-            cd "$WORKSPACE/tools"
-      
-            curl -L \
-              https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk \
-              -o magisk.apk
-      
-            unzip -o -j \
-              magisk.apk \
-              "lib/x86_64/libmagiskboot.so" \
-              -d .
-      
-            mv libmagiskboot.so magiskboot
-      
-            chmod +x magiskboot
-          fi
-      
-          test -x "$WORKSPACE/tools/magiskboot"
-      
-          echo "MagiskBoot installé"
-          
-      - name: Extract stock kernel metadata
+
+      - name: Extract stock kernel metadata and build ID
         id: stockkernel
         shell: bash
         env:
@@ -423,34 +243,46 @@ jobs:
           test -s "$BOOT_IMG"
 
           FULL_VERSION="$(
-            strings "$BOOT_IMG" \
-              | grep -a -m1 'Linux version'
+            strings "$BOOT_IMG" |
+            grep -a -m1 '^Linux version '
           )"
 
           RELEASE_SUFFIX="$(
-            printf '%s\n' "$FULL_VERSION" \
-              | grep -aoE -- '-android[^ )]+'
+            printf '%s\n' "$FULL_VERSION" |
+            grep -aoE -- '-android[^ )]+' |
+            head -n1
+          )"
+
+          KERNEL_BUILD_ID="$(
+            printf '%s\n' "$FULL_VERSION" |
+            grep -aoE -- '-ab[0-9]+' |
+            head -n1 |
+            sed 's/^-ab//'
           )"
 
           PREEMPT_LINE="$(
-            strings "$BOOT_IMG" \
-              | grep -a -m1 '^#1 SMP PREEMPT '
+            strings "$BOOT_IMG" |
+            grep -a -m1 '^#1 SMP PREEMPT '
           )"
 
           BUILD_TIMESTAMP="$(
-            printf '%s\n' "$PREEMPT_LINE" \
-              | sed 's/^#1 SMP PREEMPT //'
+            printf '%s\n' "$PREEMPT_LINE" |
+            sed 's/^#1 SMP PREEMPT //'
           )"
 
-          SOURCE_DATE_EPOCH="$(
-            date \
-              --utc \
-              --date="$BUILD_TIMESTAMP" \
-              +%s
-          )"
+          if [ -z "$FULL_VERSION" ]; then
+            echo "::error::Chaîne Linux version introuvable dans boot.img"
+            exit 1
+          fi
 
           if [ -z "$RELEASE_SUFFIX" ]; then
             echo "::error::Suffixe kernel stock introuvable"
+            echo "FULL_VERSION=$FULL_VERSION"
+            exit 1
+          fi
+
+          if [ -z "$KERNEL_BUILD_ID" ]; then
+            echo "::error::Identifiant -abXXXXXXXX introuvable dans le kernel stock"
             echo "FULL_VERSION=$FULL_VERSION"
             exit 1
           fi
@@ -462,23 +294,218 @@ jobs:
 
           case "$BUILD_TIMESTAMP" in
             *" 1970")
-              echo "::error::Le timestamp stock extrait vaut déjà 1970"
+              echo "::error::Le timestamp stock extrait vaut 1970"
               exit 1
               ;;
           esac
+
+          SOURCE_DATE_EPOCH="$(
+            date --utc --date="$BUILD_TIMESTAMP" +%s
+          )"
 
           {
             echo "release_suffix=$RELEASE_SUFFIX"
             echo "build_timestamp=$BUILD_TIMESTAMP"
             echo "source_date_epoch=$SOURCE_DATE_EPOCH"
+            echo "kernel_build_id=$KERNEL_BUILD_ID"
           } >> "$GITHUB_OUTPUT"
 
           echo "FULL_VERSION=$FULL_VERSION"
           echo "RELEASE_SUFFIX=$RELEASE_SUFFIX"
+          echo "KERNEL_BUILD_ID=$KERNEL_BUILD_ID"
           echo "PREEMPT_LINE=$PREEMPT_LINE"
           echo "BUILD_TIMESTAMP=$BUILD_TIMESTAMP"
           echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
-          
+          echo "Archive exigée: kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz"
+
+          {
+            echo "### Kernel requis par l'OTA"
+            echo
+            echo "- Famille: \`$KERNEL_FAMILY\`"
+            echo "- Build ID: \`$KERNEL_BUILD_ID\`"
+            echo "- Archive attendue: \`kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Find exact kernel archive recursively in Drive
+        id: kernel
+        shell: bash
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          ROOT_FOLDER_ID: ${{ steps.folder.outputs.folder_id }}
+          KERNEL_BUILD_ID: ${{ steps.stockkernel.outputs.kernel_build_id }}
+        run: |
+          set -euo pipefail
+
+          DRIVE_API="https://www.googleapis.com/drive/v3/files"
+          FOLDER_MIME="application/vnd.google-apps.folder"
+          EXPECTED_FILE="kernel-${KERNEL_FAMILY}-${KERNEL_BUILD_ID}.tar.xz"
+          RESULTS_FILE="$RUNNER_TEMP/drive-kernel-results.jsonl"
+
+          rm -f "$RESULTS_FILE"
+          touch "$RESULTS_FILE"
+
+          echo "=== Recherche récursive Google Drive ==="
+          echo "Dossier racine : $ROOT_FOLDER_ID"
+          echo "Archive exacte : $EXPECTED_FILE"
+
+          declare -a FOLDER_QUEUE=("$ROOT_FOLDER_ID")
+          declare -A VISITED_FOLDERS=()
+
+          while [ "${#FOLDER_QUEUE[@]}" -gt 0 ]; do
+            CURRENT_FOLDER_ID="${FOLDER_QUEUE[0]}"
+            FOLDER_QUEUE=("${FOLDER_QUEUE[@]:1}")
+
+            if [ -n "${VISITED_FOLDERS[$CURRENT_FOLDER_ID]:-}" ]; then
+              continue
+            fi
+
+            VISITED_FOLDERS["$CURRENT_FOLDER_ID"]=1
+            PAGE_TOKEN=""
+
+            echo "Exploration du dossier: $CURRENT_FOLDER_ID"
+
+            while true; do
+              QUERY="'${CURRENT_FOLDER_ID}' in parents and trashed=false"
+
+              CURL_ARGS=(
+                --silent
+                --show-error
+                --fail
+                --get
+                --header "Authorization: Bearer $ACCESS_TOKEN"
+                --data-urlencode "q=$QUERY"
+                --data-urlencode "pageSize=1000"
+                --data-urlencode "supportsAllDrives=true"
+                --data-urlencode "includeItemsFromAllDrives=true"
+                --data-urlencode "fields=nextPageToken,files(id,name,mimeType,size,modifiedTime,parents)"
+              )
+
+              if [ -n "$PAGE_TOKEN" ]; then
+                CURL_ARGS+=(--data-urlencode "pageToken=$PAGE_TOKEN")
+              fi
+
+              RESPONSE="$(curl "${CURL_ARGS[@]}" "$DRIVE_API")"
+
+              API_ERROR="$(jq -r '.error.message // empty' <<< "$RESPONSE")"
+              if [ -n "$API_ERROR" ]; then
+                echo "::error::Google Drive API: $API_ERROR"
+                exit 1
+              fi
+
+              while IFS= read -r ITEM; do
+                ITEM_ID="$(jq -r '.id' <<< "$ITEM")"
+                ITEM_NAME="$(jq -r '.name' <<< "$ITEM")"
+                ITEM_MIME="$(jq -r '.mimeType' <<< "$ITEM")"
+
+                echo "$ITEM_MIME  $ITEM_NAME"
+
+                if [ "$ITEM_MIME" = "$FOLDER_MIME" ]; then
+                  FOLDER_QUEUE+=("$ITEM_ID")
+                elif [ "$ITEM_NAME" = "$EXPECTED_FILE" ]; then
+                  printf '%s\n' "$ITEM" >> "$RESULTS_FILE"
+                fi
+              done < <(jq -c '.files[]' <<< "$RESPONSE")
+
+              PAGE_TOKEN="$(jq -r '.nextPageToken // empty' <<< "$RESPONSE")"
+              [ -n "$PAGE_TOKEN" ] || break
+            done
+          done
+
+          MATCH_COUNT="$(wc -l < "$RESULTS_FILE" | tr -d '[:space:]')"
+
+          if [ "$MATCH_COUNT" -eq 0 ]; then
+            echo "::error::Archive exacte introuvable: $EXPECTED_FILE"
+            echo "::error::Aucun fallback vers une autre révision n'est autorisé"
+            exit 1
+          fi
+
+          if [ "$MATCH_COUNT" -gt 1 ]; then
+            echo "::warning::$MATCH_COUNT copies trouvées; sélection de la plus récemment modifiée"
+          fi
+
+          FILE="$(
+            jq -s -c 'sort_by(.modifiedTime) | reverse | .[0]' "$RESULTS_FILE"
+          )"
+
+          FILE_ID="$(jq -r '.id' <<< "$FILE")"
+          FILE_NAME="$(jq -r '.name' <<< "$FILE")"
+          FILE_SIZE="$(jq -r '.size // "inconnue"' <<< "$FILE")"
+          FILE_DATE="$(jq -r '.modifiedTime // "inconnue"' <<< "$FILE")"
+
+          {
+            echo "file_id=$FILE_ID"
+            echo "file_name=$FILE_NAME"
+            echo "file_revision=$KERNEL_BUILD_ID"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "=== Archive sélectionnée ==="
+          echo "Nom     : $FILE_NAME"
+          echo "ID      : $FILE_ID"
+          echo "Taille  : $FILE_SIZE"
+          echo "Date    : $FILE_DATE"
+
+          {
+            echo "### Archive Drive sélectionnée"
+            echo
+            echo "- Archive: \`$FILE_NAME\`"
+            echo "- Date Drive: \`$FILE_DATE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download selected kernel archive
+        shell: bash
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          FILE_ID: ${{ steps.kernel.outputs.file_id }}
+          FILE_NAME: ${{ steps.kernel.outputs.file_name }}
+        run: |
+          set -euo pipefail
+
+          ARCHIVE="$WORKSPACE/src/$FILE_NAME"
+          TEMP_ARCHIVE="${ARCHIVE}.part"
+
+          if [ -s "$ARCHIVE" ]; then
+            echo "=== Archive locale déjà présente ==="
+            ls -lh "$ARCHIVE"
+
+            if xz --test "$ARCHIVE"; then
+              echo "Archive XZ locale valide"
+              exit 0
+            fi
+
+            echo "::warning::Archive locale invalide, nouveau téléchargement"
+            rm -f "$ARCHIVE"
+          fi
+
+          rm -f "$TEMP_ARCHIVE"
+
+          curl --fail --location \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --header "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&supportsAllDrives=true" \
+            --output "$TEMP_ARCHIVE"
+
+          test -s "$TEMP_ARCHIVE"
+          file "$TEMP_ARCHIVE"
+          xz --test "$TEMP_ARCHIVE"
+          mv "$TEMP_ARCHIVE" "$ARCHIVE"
+
+          echo "=== Archive prête ==="
+          ls -lh "$ARCHIVE"
+
+      - name: Cleanup old kernel archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          find "$WORKSPACE/src" -maxdepth 1 -type f \
+            \( -name 'kernel-*.tar.xz' -o -name 'kernels-*.tar.xz' \) \
+            -mtime +90 -delete
+
+          find "$WORKSPACE/src" -maxdepth 1 -type f -name '*.part' -delete
+          ls -lh "$WORKSPACE/src"
 
       - name: Extract kernel sources
         id: extract
@@ -488,94 +515,64 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "=== CLEAN BUILD DIR ==="
+          ARCHIVE="$WORKSPACE/src/$FILE_NAME"
+          test -s "$ARCHIVE"
+          xz --test "$ARCHIVE"
 
-          rm -rf "$WORKSPACE/build"/*
-
+          rm -rf "$WORKSPACE/build"
           mkdir -p "$WORKSPACE/build"
 
-          echo "=== EXTRACT ==="
+          echo "=== Contenu initial de l'archive ==="
+          tar -tf "$ARCHIVE" | head -n 50 || true
 
-          tar -xf \
-            "$WORKSPACE/src/$FILE_NAME" \
-            -C "$WORKSPACE/build"
-
+          tar -xf "$ARCHIVE" -C "$WORKSPACE/build"
           echo "source_dir=$WORKSPACE/build" >> "$GITHUB_OUTPUT"
-    
+          du -sh "$WORKSPACE/build"
+
       - name: Inspect extracted sources
         shell: bash
         run: |
           set -euo pipefail
 
-          echo
-          echo "=== ROOT ==="
-          ls -lah "$WORKSPACE/build"
-
-          echo
           echo "=== LEVEL 1 ==="
-          find "$WORKSPACE/build" \
-            -mindepth 1 \
-            -maxdepth 1 \
-            -printf '%y %p\n' | sort
-
-          echo
+          find "$WORKSPACE/build" -mindepth 1 -maxdepth 1 -printf '%y %p\n' | sort
           echo "=== LEVEL 2 ==="
-          find "$WORKSPACE/build" \
-            -mindepth 1 \
-            -maxdepth 2 \
-            -printf '%y %p\n' | sort | head -250
-
-          echo
+          find "$WORKSPACE/build" -mindepth 1 -maxdepth 2 -printf '%y %p\n' | sort | head -250
           echo "=== SIZE ==="
           du -sh "$WORKSPACE/build"/* 2>/dev/null | sort -h || true
-
-          echo
           echo "=== KERNEL MARKERS ==="
-
-          find "$WORKSPACE/build" \
-            -maxdepth 5 \
-            \( \
-              -name BUILD.bazel \
-              -o -name WORKSPACE \
-              -o -name MODULE.bazel \
-              -o -name build.config \
-              -o -name build.config.gki.aarch64 \
-              -o -name Makefile \
-            \) \
+          find "$WORKSPACE/build" -maxdepth 6 \
+            \( -name BUILD.bazel -o -name WORKSPACE -o -name MODULE.bazel \
+               -o -name build.config -o -name build.config.gki.aarch64 -o -name Makefile \) \
             -print | sort
-            
+
       - name: Detect kernel root
         id: root
         shell: bash
         run: |
           set -euo pipefail
 
-          KERNEL_ROOT="$(
-            find "$WORKSPACE/build" \
-              -mindepth 1 \
-              -maxdepth 1 \
-              -type d \
-              -name 'kernel-spacecraft-*' \
-              -print \
-              -quit
+          GKI_ROOT="$(
+            find "$WORKSPACE/build" -mindepth 2 -maxdepth 6 \
+              -type d -path '*/common/gki' -print -quit
           )"
 
-          if [ -z "$KERNEL_ROOT" ]; then
-            echo "::error::Répertoire kernel-spacecraft-* introuvable"
+          if [ -z "$GKI_ROOT" ]; then
+            echo "::error::Répertoire common/gki introuvable"
+            find "$WORKSPACE/build" -mindepth 1 -maxdepth 4 -type d -print | sort | head -300
             exit 1
           fi
 
-          if [ ! -d "$KERNEL_ROOT/common/gki" ]; then
-            echo "::error::Répertoire common/gki introuvable dans $KERNEL_ROOT"
-            exit 1
-          fi
+          KERNEL_ROOT="$(dirname "$(dirname "$GKI_ROOT")")"
+
+          test -f "$GKI_ROOT/Makefile"
+          test -f "$GKI_ROOT/BUILD.bazel"
 
           echo "kernel_root=$KERNEL_ROOT" >> "$GITHUB_OUTPUT"
-          echo "gki_root=$KERNEL_ROOT/common/gki" >> "$GITHUB_OUTPUT"
-
+          echo "gki_root=$GKI_ROOT" >> "$GITHUB_OUTPUT"
           echo "KERNEL_ROOT=$KERNEL_ROOT"
-          echo "GKI_ROOT=$KERNEL_ROOT/common/gki"
-          
+          echo "GKI_ROOT=$GKI_ROOT"
+
       - name: Detect Android KMI version
         id: kmi
         shell: bash
@@ -585,65 +582,40 @@ jobs:
         run: |
           set -euo pipefail
 
-          KERNEL_VERSION="$(
-            awk '$1 == "VERSION" && $2 == "=" { print $3; exit }' \
-              "$GKI_ROOT/Makefile"
-          )"
-
-          KERNEL_PATCHLEVEL="$(
-            awk '$1 == "PATCHLEVEL" && $2 == "=" { print $3; exit }' \
-              "$GKI_ROOT/Makefile"
-          )"
-
+          KERNEL_VERSION="$(awk '$1 == "VERSION" && $2 == "=" { print $3; exit }' "$GKI_ROOT/Makefile")"
+          KERNEL_PATCHLEVEL="$(awk '$1 == "PATCHLEVEL" && $2 == "=" { print $3; exit }' "$GKI_ROOT/Makefile")"
           KERNEL_SERIES="${KERNEL_VERSION}.${KERNEL_PATCHLEVEL}"
 
-          echo "=== Version Linux ==="
-          echo "$KERNEL_SERIES"
-
           KMI_STRING="$(
-            grep -RhoE \
-              'android[0-9]+-[0-9]+\.[0-9]+' \
+            grep -RhoE 'android[0-9]+-[0-9]+\.[0-9]+' \
               "$GKI_ROOT/BUILD.bazel" \
-              "$GKI_ROOT/build.config"* \
+              "$GKI_ROOT"/build.config* \
               "$KERNEL_ROOT/MODULE.bazel" \
               "$KERNEL_ROOT/private/devices/google/spacecraft" \
-              2>/dev/null \
-            | sort -u \
-            | head -n 1 \
-            || true
+              2>/dev/null |
+            sort -u | head -n1 || true
           )"
 
           if [ -z "$KMI_STRING" ]; then
-            echo "::error::Impossible de détecter automatiquement le KMI Android."
-            echo "Version Linux détectée : $KERNEL_SERIES"
+            echo "::error::Impossible de détecter le KMI Android"
             exit 1
           fi
 
           KMI_KERNEL_SERIES="${KMI_STRING#*-}"
-
           if [ "$KMI_KERNEL_SERIES" != "$KERNEL_SERIES" ]; then
-            echo "::error::Incohérence KMI : $KMI_STRING mais Makefile indique $KERNEL_SERIES"
+            echo "::error::KMI $KMI_STRING incohérent avec le Makefile $KERNEL_SERIES"
             exit 1
           fi
 
           SUSFS_BRANCH="gki-${KMI_STRING}-dev"
 
-          echo
-          echo "=== KMI détecté ==="
-          echo "KMI_STRING=$KMI_STRING"
-          echo "SUSFS_BRANCH=$SUSFS_BRANCH"
-
           echo "kernel_series=$KERNEL_SERIES" >> "$GITHUB_OUTPUT"
           echo "kmi_string=$KMI_STRING" >> "$GITHUB_OUTPUT"
           echo "susfs_branch=$SUSFS_BRANCH" >> "$GITHUB_OUTPUT"
 
-          {
-            echo "### KMI détecté"
-            echo
-            echo "- Linux : \`$KERNEL_SERIES\`"
-            echo "- KMI : \`$KMI_STRING\`"
-            echo "- Branche SUSFS : \`$SUSFS_BRANCH\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo "KERNEL_SERIES=$KERNEL_SERIES"
+          echo "KMI_STRING=$KMI_STRING"
+          echo "SUSFS_BRANCH=$SUSFS_BRANCH"
 
       - name: Spoof kernel metadata
         shell: bash
@@ -652,19 +624,13 @@ jobs:
           RELEASE_SUFFIX: ${{ steps.stockkernel.outputs.release_suffix }}
         run: |
           set -euo pipefail
-
           cd "$GKI_ROOT"
 
-          # Suppression du -dirty
-          sed -i \
-            "s/printf '%s' -dirty/printf '%s' ''/g" \
-            scripts/setlocalversion
-
-          # Remplacement du dernier echo
+          sed -i "s/printf '%s' -dirty/printf '%s' ''/g" scripts/setlocalversion
           sed -i \
             "s#echo \"\${KERNELVERSION}\${file_localversion}\${config_localversion}\${LOCALVERSION}\${scm_version}\"#echo \"\${KERNELVERSION}${RELEASE_SUFFIX}\"#" \
             scripts/setlocalversion
-            
+
       - name: Inject stock kernel build timestamp
         shell: bash
         env:
@@ -675,68 +641,29 @@ jobs:
 
           INIT_MAKEFILE="$GKI_ROOT/init/Makefile"
           TEMP_MAKEFILE="$INIT_MAKEFILE.tmp"
-
           test -s "$INIT_MAKEFILE"
+          test -n "$BUILD_TIMESTAMP"
 
-          if [ -z "$BUILD_TIMESTAMP" ]; then
-            echo "::error::BUILD_TIMESTAMP est vide"
-            exit 1
-          fi
+          grep -nF 'build-timestamp = $(or $(KBUILD_BUILD_TIMESTAMP), $(build-timestamp-auto))' "$INIT_MAKEFILE"
 
-          echo "=== Timestamp stock ==="
-          printf '<%s>\n' "$BUILD_TIMESTAMP"
-
-          echo
-          echo "=== Avant modification ==="
-
-          grep -nF \
-            'build-timestamp = $(or $(KBUILD_BUILD_TIMESTAMP), $(build-timestamp-auto))' \
-            "$INIT_MAKEFILE"
-
-          awk \
-            -v timestamp="$BUILD_TIMESTAMP" \
-            '
-              $0 == "build-timestamp = $(or $(KBUILD_BUILD_TIMESTAMP), $(build-timestamp-auto))" {
-                print "build-timestamp = \"" timestamp "\""
-                replaced++
-                next
+          awk -v timestamp="$BUILD_TIMESTAMP" '
+            $0 == "build-timestamp = $(or $(KBUILD_BUILD_TIMESTAMP), $(build-timestamp-auto))" {
+              print "build-timestamp = \"" timestamp "\""
+              replaced++
+              next
+            }
+            { print }
+            END {
+              if (replaced != 1) {
+                print "Nombre de lignes remplacées incorrect: " replaced > "/dev/stderr"
+                exit 42
               }
-
-              {
-                print
-              }
-
-              END {
-                if (replaced != 1) {
-                  print "Nombre de lignes remplacées incorrect : " replaced > "/dev/stderr"
-                  exit 42
-                }
-              }
-            ' \
-            "$INIT_MAKEFILE" \
-            > "$TEMP_MAKEFILE"
+            }
+          ' "$INIT_MAKEFILE" > "$TEMP_MAKEFILE"
 
           mv "$TEMP_MAKEFILE" "$INIT_MAKEFILE"
-
-          echo
-          echo "=== Après modification ==="
-
-          grep -nF \
-            'build-timestamp =' \
-            "$INIT_MAKEFILE"
-
           EXPECTED_LINE="build-timestamp = \"$BUILD_TIMESTAMP\""
-
-          if ! grep -Fqx \
-            -- "$EXPECTED_LINE" \
-            "$INIT_MAKEFILE"
-          then
-            echo "::error::Le timestamp stock n'a pas été injecté"
-            exit 1
-          fi
-
-          echo
-          echo "Timestamp stock injecté correctement."
+          grep -Fqx -- "$EXPECTED_LINE" "$INIT_MAKEFILE"
 
       - name: Install KernelSU-Next dev-susfs
         shell: bash
@@ -744,41 +671,22 @@ jobs:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
-
           cd "$GKI_ROOT"
-
           curl -LSs \
-            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" \
-            | bash -s dev-susfs
-          # curl -LSs \
-          # "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
-          # | bash -
+            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" |
+            bash -s dev-susfs
+
       - name: Verify KernelSU-Next installation
         shell: bash
         env:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
-
           cd "$GKI_ROOT"
-
-          echo "=== Branche ==="
-          git -C KernelSU-Next branch --show-current || true
-
-          echo
-          echo "=== Commit ==="
-          git -C KernelSU-Next log -1 --oneline || true
-
-          echo
-          echo "=== Driver ==="
+          git -C KernelSU-Next branch --show-current
+          git -C KernelSU-Next log -1 --oneline
+          test -L drivers/kernelsu
           ls -lah drivers/kernelsu
-
-          echo
-          echo "=== Kconfig ==="
-          grep -R "KernelSU" . | head -20 || true
-
-          echo
-          echo "=== Installation OK ==="
 
       - name: Clone matching SUSFS branch
         id: susfs
@@ -791,137 +699,50 @@ jobs:
           SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
           SUSFS_DIR="$WORKSPACE/susfs4ksu"
 
-          echo "=== Branche SUSFS demandée ==="
-          echo "$SUSFS_BRANCH"
-
-          if ! git ls-remote \
-            --exit-code \
-            --heads \
-            "$SUSFS_REPO" \
-            "refs/heads/$SUSFS_BRANCH" \
-            >/dev/null; then
-
-            echo "::error::La branche $SUSFS_BRANCH n'existe pas dans susfs4ksu."
+          git ls-remote --exit-code --heads "$SUSFS_REPO" "refs/heads/$SUSFS_BRANCH" >/dev/null || {
+            echo "::error::Branche SUSFS absente: $SUSFS_BRANCH"
             exit 1
-          fi
+          }
 
           rm -rf "$SUSFS_DIR"
+          git clone --depth 1 --single-branch --branch "$SUSFS_BRANCH" "$SUSFS_REPO" "$SUSFS_DIR"
 
-          git clone \
-            --depth 1 \
-            --single-branch \
-            --branch "$SUSFS_BRANCH" \
-            "$SUSFS_REPO" \
-            "$SUSFS_DIR"
-
-          SUSFS_COMMIT="$(
-            git -C "$SUSFS_DIR" rev-parse HEAD
-          )"
-
-          SUSFS_SUBJECT="$(
-            git -C "$SUSFS_DIR" log -1 --format='%s'
-          )"
-
+          SUSFS_COMMIT="$(git -C "$SUSFS_DIR" rev-parse HEAD)"
           echo "susfs_dir=$SUSFS_DIR" >> "$GITHUB_OUTPUT"
           echo "susfs_commit=$SUSFS_COMMIT" >> "$GITHUB_OUTPUT"
-
-          echo
-          echo "=== SUSFS sélectionné ==="
-          echo "Branche : $SUSFS_BRANCH"
-          echo "Commit  : $SUSFS_COMMIT"
-          echo "Message : $SUSFS_SUBJECT"
-
-          {
-            echo "### SUSFS"
-            echo
-            echo "- Branche : \`$SUSFS_BRANCH\`"
-            echo "- Commit : \`$SUSFS_COMMIT\`"
-            echo "- Message : \`$SUSFS_SUBJECT\`"
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Integrate SUSFS into GKI kernel
         shell: bash
         env:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
           SUSFS_DIR: ${{ steps.susfs.outputs.susfs_dir }}
-          KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
           KMI_STRING: ${{ steps.kmi.outputs.kmi_string }}
         run: |
           set -euo pipefail
 
           KERNEL_PATCH_SOURCE="$SUSFS_DIR/kernel_patches/50_add_susfs_in_gki-${KMI_STRING}.patch"
-          KERNEL_PATCH_LOCAL="$GKI_ROOT/50_add_susfs_in_gki-${KMI_STRING}.patch"
 
-          echo "=== Paramètres SUSFS ==="
-          echo "GKI_ROOT=$GKI_ROOT"
-          echo "SUSFS_DIR=$SUSFS_DIR"
-          echo "KERNEL_SERIES=$KERNEL_SERIES"
-          echo "KERNEL_PATCH_SOURCE=$KERNEL_PATCH_SOURCE"
-
-          echo
-          echo "=== Validation des fichiers nécessaires ==="
-
-          test -d "$GKI_ROOT"
-          test -d "$GKI_ROOT/fs"
-          test -d "$GKI_ROOT/include/linux"
-          test -d "$GKI_ROOT/KernelSU-Next"
-          test -L "$GKI_ROOT/drivers/kernelsu"
-
-          test -f "$KERNEL_PATCH_SOURCE"
+          test -s "$KERNEL_PATCH_SOURCE"
           test -d "$SUSFS_DIR/kernel_patches/fs"
           test -d "$SUSFS_DIR/kernel_patches/include/linux"
 
-          ls -lh "$KERNEL_PATCH_SOURCE"
+          cp -af "$SUSFS_DIR/kernel_patches/fs/." "$GKI_ROOT/fs/"
+          cp -af "$SUSFS_DIR/kernel_patches/include/linux/." "$GKI_ROOT/include/linux/"
 
-          echo
-          echo "=== Copie du patch kernel ==="
+          find "$GKI_ROOT" -type f \( -name '*.rej' -o -name '*.orig' \) -delete
 
-          cp -f \
-            "$KERNEL_PATCH_SOURCE" \
-            "$KERNEL_PATCH_LOCAL"
-
-          echo
-          echo "=== Copie des sources SUSFS dans common/gki ==="
-
-          cp -af \
-            "$SUSFS_DIR/kernel_patches/fs/." \
-            "$GKI_ROOT/fs/"
-
-          cp -af \
-            "$SUSFS_DIR/kernel_patches/include/linux/." \
-            "$GKI_ROOT/include/linux/"
-
-          echo
-          echo "=== Application partielle du patch SUSFS officiel ==="
-          
           cd "$GKI_ROOT"
-          
           set +e
-          
-          patch \
-            --forward \
-            --batch \
-            -p1 \
-            < "$KERNEL_PATCH_LOCAL"
-          
+          patch --forward --batch -p1 < "$KERNEL_PATCH_SOURCE"
           PATCH_STATUS=$?
-          
           set -e
-          
+
+          echo "PATCH_STATUS=$PATCH_STATUS"
           if [ "$PATCH_STATUS" -ne 0 ]; then
-            echo "Le patch officiel contient des hunks incompatibles avec ce snapshot."
-            echo "Poursuite avec le patch complémentaire Spacecraft."
+            echo "::warning::Hunks incompatibles; application du fixup Spacecraft ensuite"
           fi
-          
-          echo
-          echo "=== Rejets produits par le patch officiel ==="
-          
-          find "$GKI_ROOT" \
-            -type f \
-            -name '*.rej' \
-            -print \
-            -exec cat {} \; \
-            || true
+
+          find "$GKI_ROOT" -type f -name '*.rej' -print -exec cat {} \; || true
 
       - name: Apply Spacecraft SUSFS fixups
         shell: bash
@@ -931,176 +752,60 @@ jobs:
           set -euo pipefail
 
           FIXUP_PATCH="$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
-
-          echo "=== Patch complémentaire ==="
-          ls -lh "$FIXUP_PATCH"
-
+          test -s "$FIXUP_PATCH"
           cd "$GKI_ROOT"
 
-          echo
-          echo "=== Test du patch complémentaire ==="
+          patch --dry-run --forward --batch -p1 < "$FIXUP_PATCH"
+          patch --forward --batch -p1 < "$FIXUP_PATCH"
 
-          patch \
-            --dry-run \
-            --forward \
-            --batch \
-            -p1 \
-            < "$FIXUP_PATCH"
+          rm -f fs/exec.c.rej fs/proc/task_mmu.c.rej
 
-          echo
-          echo "=== Application du patch complémentaire ==="
-
-          patch \
-            --forward \
-            --batch \
-            -p1 \
-            < "$FIXUP_PATCH"
-
-          echo
-          echo "=== Suppression des rejets désormais corrigés ==="
-
-          rm -f \
-            fs/exec.c.rej \
-            fs/proc/task_mmu.c.rej
-
-          echo
-          echo "=== Vérification des corrections ==="
-
-          grep -n -C 3 \
-            'include <linux/susfs_def.h>' \
-            fs/exec.c
-
-          grep -n -A 8 \
-            '^static int show_smap' \
-            fs/proc/task_mmu.c
-
-          echo
-          echo "=== Vérification des rejets restants ==="
-
-          REMAINING_REJECTS="$(
-            find "$GKI_ROOT" \
-              -type f \
-              -name '*.rej' \
-              -print
-          )"
-
+          REMAINING_REJECTS="$(find "$GKI_ROOT" -type f -name '*.rej' -print)"
           if [ -n "$REMAINING_REJECTS" ]; then
-            echo "::error::Des rejets non traités subsistent :"
+            echo "::error::Rejets SUSFS restants:"
             echo "$REMAINING_REJECTS"
             exit 1
           fi
 
-          echo "Patch complémentaire appliqué correctement."
-
-          echo
-          echo "=== Vérification des fichiers copiés ==="
-
-          test -s "$GKI_ROOT/fs/susfs.c"
-          test -s "$GKI_ROOT/include/linux/susfs.h"
-
-          ls -lh \
-            "$GKI_ROOT/fs/susfs.c" \
-            "$GKI_ROOT/include/linux/susfs.h"
-
-          echo
-          echo "=== Patch SUSFS kernel appliqué ==="
+          test -s fs/susfs.c
+          test -s include/linux/susfs.h
 
       - name: Verify SUSFS kernel integration
         shell: bash
         env:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-          KERNEL_SERIES: ${{ steps.kmi.outputs.kernel_series }}
-          SUSFS_BRANCH: ${{ steps.kmi.outputs.susfs_branch }}
         run: |
           set -euo pipefail
-
           cd "$GKI_ROOT"
 
-          echo "=== Versions sélectionnées ==="
-          echo "Kernel Linux : $KERNEL_SERIES"
-          echo "Branche SUSFS : $SUSFS_BRANCH"
+          grep -n -E 'susfs(\.o)?' fs/Makefile || {
+            echo "::error::SUSFS absent de fs/Makefile"
+            tail -n 80 fs/Makefile
+            exit 1
+          }
 
-          echo
-          echo "=== KernelSU-Next ==="
+          grep -q 'KSU_SUSFS' KernelSU-Next/kernel/Kconfig || {
+            echo "::error::KSU_SUSFS absent du Kconfig KernelSU-Next"
+            exit 1
+          }
 
-          test -d KernelSU-Next
-          test -L drivers/kernelsu
-
-          echo "Branche KernelSU-Next :"
-          git -C KernelSU-Next branch --show-current
-
-          echo "Commit KernelSU-Next :"
-          git -C KernelSU-Next log -1 --oneline
-
-          echo "Tag KernelSU-Next :"
-          git -C KernelSU-Next describe --tags --always
-
-          echo "Lien drivers/kernelsu :"
-          ls -lah drivers/kernelsu
-          readlink -f drivers/kernelsu
-
-          echo
-          echo "=== Fichiers SUSFS ==="
+          grep -R -q 'linux/susfs\.h' KernelSU-Next/kernel || {
+            echo "::error::KernelSU-Next ne référence pas linux/susfs.h"
+            exit 1
+          }
 
           test -s include/linux/susfs.h
           test -s fs/susfs.c
+          echo "Intégration SUSFS validée"
 
-          ls -lh \
-            include/linux/susfs.h \
-            fs/susfs.c
-
-          echo
-          echo "=== Intégration fs/Makefile ==="
-
-          grep -n -E 'susfs(\.o)?' fs/Makefile
-
-          echo
-          echo "=== Intégration fs/Kconfig ==="
-
-          grep -n -E 'SUSFS|susfs' fs/Kconfig || true
-
-          echo
-          echo "=== Configuration KernelSU-Next SUSFS ==="
-
-          grep -n -E \
-            'config KSU|config KSU_SUSFS|KSU_SUSFS' \
-            KernelSU-Next/kernel/Kconfig \
-            | head -n 60 || true
-
-          echo
-          echo "=== Références SUSFS dans KernelSU-Next ==="
-
-          grep -R -n -m 30 \
-            -E 'linux/susfs\.h|CONFIG_KSU_SUSFS' \
-            KernelSU-Next/kernel \
-            drivers/kernelsu \
-            || true
-
-          echo
-          echo "=== Vérifications bloquantes ==="
-
-          grep -q -E 'susfs(\.o)?' fs/Makefile
-          grep -q 'KSU_SUSFS' KernelSU-Next/kernel/Kconfig
-          grep -R -q 'linux/susfs\.h' KernelSU-Next/kernel
-          test -s include/linux/susfs.h
-          test -s fs/susfs.c
-
-          echo
-          echo "=== Intégration SUSFS kernel validée ==="
-          
       - name: Disable protected modules
         shell: bash
         env:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
-      
           cd "$GKI_ROOT"
-      
-          patch \
-            --forward \
-            --batch \
-            -p1 \
+          patch --forward --batch -p1 \
             < "$GITHUB_WORKSPACE/patches/0002-disable-protected-modules.patch"
 
       - name: Extract stock defconfig from boot.img
@@ -1111,36 +816,22 @@ jobs:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
-      
+
           MAGISKBOOT="$WORKSPACE/tools/magiskboot"
           EXTRACT_IKCONFIG="$WORKSPACE/tools/extract-ikconfig"
-      
+
           rm -rf "$WORKSPACE/stockconfig"
           mkdir -p "$WORKSPACE/stockconfig"
-      
           cd "$WORKSPACE/stockconfig"
-      
+
           "$MAGISKBOOT" unpack "$BOOT_IMG"
-      
           test -f kernel
-      
           "$EXTRACT_IKCONFIG" kernel > stock_defconfig
-      
           test -s stock_defconfig
-      
-          mkdir -p \
-            "$GKI_ROOT/arch/arm64/configs"
-      
-          cp \
-            stock_defconfig \
-            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
-      
-          ls -lh \
-            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
-      
-          head -20 \
-            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
-            
+
+          mkdir -p "$GKI_ROOT/arch/arm64/configs"
+          cp stock_defconfig "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
+
       - name: Spoof /proc/config.gz with stock defconfig
         shell: bash
         env:
@@ -1149,77 +840,39 @@ jobs:
           set -euo pipefail
 
           KERNEL_MAKEFILE="$GKI_ROOT/kernel/Makefile"
-
-          test -f "$KERNEL_MAKEFILE"
-
-          test -s \
-            "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
-
-          echo "=== Before ==="
-
-          grep -n \
-            'config_data:' \
-            "$KERNEL_MAKEFILE"
+          test -s "$GKI_ROOT/arch/arm64/configs/stock_defconfig"
 
           sed -i \
             's#$(obj)/config_data: $(KCONFIG_CONFIG) FORCE#$(obj)/config_data: arch/arm64/configs/stock_defconfig FORCE#' \
             "$KERNEL_MAKEFILE"
 
-          echo
-          echo "=== After ==="
+          grep -q '$(obj)/config_data: arch/arm64/configs/stock_defconfig FORCE' "$KERNEL_MAKEFILE"
 
-          grep -n \
-            'config_data:' \
-            "$KERNEL_MAKEFILE"
-
-          grep -q \
-            '$(obj)/config_data: arch/arm64/configs/stock_defconfig FORCE' \
-            "$KERNEL_MAKEFILE"
-
-          echo
-          echo "stock_defconfig spoof enabled"
-
-      - name: Debug init timestamp
+      - name: Install nomount built-in
         shell: bash
         env:
           GKI_ROOT: ${{ steps.root.outputs.gki_root }}
         run: |
           set -euo pipefail
-
-          grep -n "build-timestamp" \
-            "$GKI_ROOT/init/Makefile"
-
-          echo
-          echo "=== SOURCE_DATE_EPOCH refs ==="
-
-          grep -R "SOURCE_DATE_EPOCH" \
-            "$GKI_ROOT" \
-            2>/dev/null | head -50 || true
-
-      - name: Install nomount (built-in)
-        shell: bash
-        env:
-          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-        run: |
-          set -euo pipefail
-
           cd "$GKI_ROOT"
 
-          echo "=== Application du patch nomount ==="
-          curl -LSs https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+          curl -LSs \
+            "https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh" |
+            bash -
 
-          echo "=== Passage de nomount en built-in par défaut ==="
-          # Modification directe du Kconfig généré pour forcer 'default y'
-          if grep -q "config NOMOUNT" fs/Kconfig; then
-            if grep -A 5 "config NOMOUNT" fs/Kconfig | grep -q "default"; then
-              sed -i '/config NOMOUNT/,/default/ s/default n/default y/' fs/Kconfig
+          if grep -q '^config NOMOUNT' fs/Kconfig; then
+            if sed -n '/^config NOMOUNT/,/^config /p' fs/Kconfig | grep -q '^[[:space:]]*default '; then
+              sed -i '/^config NOMOUNT/,/^config / s/^[[:space:]]*default n/[TAB]default y/' fs/Kconfig
+              sed -i 's/^\[TAB\]/\t/' fs/Kconfig
             else
-              sed -i '/config NOMOUNT/a \tdefault y' fs/Kconfig
+              sed -i '/^config NOMOUNT/a\	default y' fs/Kconfig
             fi
+          else
+            echo "::error::config NOMOUNT introuvable dans fs/Kconfig"
+            exit 1
           fi
 
-          echo "=== Vérification Kconfig ==="
-          grep -A 8 "config NOMOUNT" fs/Kconfig || true
+          grep -A 8 '^config NOMOUNT' fs/Kconfig
 
       - name: Build GKI from sources
         shell: bash
@@ -1229,32 +882,9 @@ jobs:
           KBUILD_BUILD_HOST: build-host
         run: |
           set -euo pipefail
-
           cd "$KERNEL_ROOT"
 
-          echo "=== Racine Spacecraft ==="
-          pwd
-
-          echo
-          # echo "=== KernelSU-Next ==="
-          # git -C common/gki/KernelSU-Next branch --show-current
-          # git -C common/gki/KernelSU-Next log -1 --oneline
-          # git -C common/gki/KernelSU-Next describe --tags --always
-
-          echo
-          echo "=== Métadonnées de compilation ==="
-          echo "KBUILD_BUILD_USER=$KBUILD_BUILD_USER"
-          echo "KBUILD_BUILD_HOST=$KBUILD_BUILD_HOST"
-
-          echo
-          echo "=== Timestamp injecté dans init/Makefile ==="
-
-          grep -nF \
-            'build-timestamp =' \
-            common/gki/init/Makefile
-
-          echo
-          echo "=== Compilation GKI depuis les sources ==="
+          grep -nF 'build-timestamp =' common/gki/init/Makefile
 
           time tools/bazel build \
             --config=spacecraft \
@@ -1264,70 +894,38 @@ jobs:
             --//build/kernel/kleaf:use_prebuilt_gki=false \
             --//common:kernel_package_use_prebuilt_kernel=false \
             //common/gki:kernel_aarch64
-            
+
       - name: Verify compiled kernel metadata
         shell: bash
         env:
           KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
           EXPECTED_TIMESTAMP: ${{ steps.stockkernel.outputs.build_timestamp }}
           EXPECTED_RELEASE_SUFFIX: ${{ steps.stockkernel.outputs.release_suffix }}
+          EXPECTED_BUILD_ID: ${{ steps.stockkernel.outputs.kernel_build_id }}
         run: |
           set -euo pipefail
 
           VMLINUX="$KERNEL_ROOT/bazel-bin/common/gki/kernel_aarch64/vmlinux"
-
           test -s "$VMLINUX"
 
-          LINUX_VERSION="$(
-            strings "$VMLINUX" \
-              | grep -a -m1 '^Linux version '
-          )"
+          LINUX_VERSION="$(strings "$VMLINUX" | grep -a -m1 '^Linux version ')"
+          PREEMPT_LINE="$(strings "$VMLINUX" | grep -a -m1 '^#1 SMP PREEMPT ')"
 
-          PREEMPT_LINE="$(
-            strings "$VMLINUX" \
-              | grep -a -m1 '^#1 SMP PREEMPT '
-          )"
-
-          echo "=== Métadonnées du kernel compilé ==="
           echo "LINUX_VERSION=$LINUX_VERSION"
           echo "PREEMPT_LINE=$PREEMPT_LINE"
 
-          echo
-          echo "=== Valeurs attendues ==="
-          echo "EXPECTED_RELEASE_SUFFIX=$EXPECTED_RELEASE_SUFFIX"
-          echo "EXPECTED_TIMESTAMP=$EXPECTED_TIMESTAMP"
-
-          if ! grep -Fq \
-            -- "$EXPECTED_RELEASE_SUFFIX" \
-            <<< "$LINUX_VERSION"
-          then
-            echo "::error::Le suffixe kernel stock n'est pas présent"
-            echo "Attendu : $EXPECTED_RELEASE_SUFFIX"
-            echo "Obtenu  : $LINUX_VERSION"
-            exit 1
-          fi
-
-          if ! grep -Fq \
-            -- '(kleaf@build-host)' \
-            <<< "$LINUX_VERSION"
-          then
-            echo "::error::Le couple kleaf@build-host n'est pas présent"
-            echo "Obtenu : $LINUX_VERSION"
-            exit 1
-          fi
+          grep -Fq -- "$EXPECTED_RELEASE_SUFFIX" <<< "$LINUX_VERSION"
+          grep -Fq -- "-ab${EXPECTED_BUILD_ID}" <<< "$LINUX_VERSION"
+          grep -Fq -- '(kleaf@build-host)' <<< "$LINUX_VERSION"
 
           EXPECTED_PREEMPT="#1 SMP PREEMPT $EXPECTED_TIMESTAMP"
-
           if [ "$PREEMPT_LINE" != "$EXPECTED_PREEMPT" ]; then
             echo "::error::Timestamp kernel incorrect"
-            echo "Attendu : $EXPECTED_PREEMPT"
-            echo "Obtenu  : $PREEMPT_LINE"
+            echo "Attendu: $EXPECTED_PREEMPT"
+            echo "Obtenu : $PREEMPT_LINE"
             exit 1
           fi
 
-          echo
-          echo "=== Métadonnées kernel validées ==="
-          
       - name: Gather versions
         id: versions
         shell: bash
@@ -1337,60 +935,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          #
-          # KernelSU-Next
-          #
-          KSU_VERSION="$(
-            git -C "$GKI_ROOT/KernelSU-Next" rev-list --count HEAD
-          )"
-
+          KSU_VERSION="$(git -C "$GKI_ROOT/KernelSU-Next" rev-list --count HEAD)"
           KSU_VERSION=$((30000 + KSU_VERSION))
 
-          #
-          # SUSFS
-          #
           git -C "$SUSFS_DIR" fetch --tags >/dev/null 2>&1 || true
+          SUSFS_VERSION="$(git -C "$SUSFS_DIR" describe --tags --abbrev=0 2>/dev/null || true)"
 
-          SUSFS_VERSION=""
-
-          # Priorité 1 : tag git
-          if SUSFS_VERSION="$(
-            git -C "$SUSFS_DIR" describe --tags --abbrev=0 2>/dev/null
-          )"; then
-            true
+          if [ -z "$SUSFS_VERSION" ]; then
+            SUSFS_VERSION="$(grep -RhoE 'v[0-9]+\.[0-9]+\.[0-9]+' "$SUSFS_DIR" | sort -Vu | tail -n1 || true)"
           fi
 
-          # Priorité 2 : recherche d'une version dans les sources
           if [ -z "$SUSFS_VERSION" ]; then
-            SUSFS_VERSION="$(
-              grep -RhoE 'v[0-9]+\.[0-9]+\.[0-9]+' "$SUSFS_DIR" \
-              | sort -Vu \
-              | tail -n1 \
-              || true
-            )"
-          fi
-
-          # Priorité 3 : fallback commit court
-          if [ -z "$SUSFS_VERSION" ]; then
-            SUSFS_VERSION="git-$(
-              git -C "$SUSFS_DIR" rev-parse --short HEAD
-            )"
+            SUSFS_VERSION="git-$(git -C "$SUSFS_DIR" rev-parse --short HEAD)"
           fi
 
           echo "ksu_version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
           echo "susfs_version=$SUSFS_VERSION" >> "$GITHUB_OUTPUT"
 
-          echo "KSU_VERSION=$KSU_VERSION"
-          echo "SUSFS_VERSION=$SUSFS_VERSION"
-      # - name: Gather versions (no susfs)
-      #   id: versions
-      #   shell: bash
-      #   run: |
-      #     set -euo pipefail
-      
-      #     echo "ksu_version=none" >> "$GITHUB_OUTPUT"
-      #     echo "susfs_version=none" >> "$GITHUB_OUTPUT"
-    
       - name: Extract SPL from boot image
         id: spl
         shell: bash
@@ -1398,25 +959,18 @@ jobs:
           BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
         run: |
           set -euo pipefail
-      
+
           SPL="$(
             strings "$BOOT_IMG" |
-            awk '
-              /com.android.build.boot.security_patch/ {
-                getline
-                print
-                exit
-              }
-            '
+            awk '/com.android.build.boot.security_patch/ { getline; print; exit }'
           )"
-      
+
           if [ -z "$SPL" ]; then
-            echo "::error::Unable to extract SPL from boot image"
+            echo "::error::Impossible d'extraire le SPL"
             exit 1
           fi
-      
+
           echo "spl=$SPL" >> "$GITHUB_OUTPUT"
-      
           echo "SPL=$SPL"
 
       - name: Repack boot image
@@ -1428,31 +982,27 @@ jobs:
           SUSFS_VERSION: ${{ steps.versions.outputs.susfs_version }}
           SPL: ${{ steps.spl.outputs.spl }}
           KERNEL_ROOT: ${{ steps.root.outputs.kernel_root }}
+          KERNEL_BUILD_ID: ${{ steps.stockkernel.outputs.kernel_build_id }}
         run: |
           set -euo pipefail
 
           MAGISKBOOT="$WORKSPACE/tools/magiskboot"
+          REPACK_DIR="$WORKSPACE/dist/repack"
 
-          mkdir -p "$WORKSPACE/dist/repack"
-
-          cd "$WORKSPACE/dist/repack"
+          rm -rf "$REPACK_DIR"
+          mkdir -p "$REPACK_DIR"
+          cd "$REPACK_DIR"
 
           cp "$BOOT_IMG" boot.img
-
           "$MAGISKBOOT" unpack boot.img
 
-          cp \
-            "$KERNEL_ROOT/bazel-bin/common/gki/kernel_aarch64/Image.lz4" \
-            kernel
-
+          cp "$KERNEL_ROOT/bazel-bin/common/gki/kernel_aarch64/Image.lz4" kernel
           "$MAGISKBOOT" repack boot.img
 
-          FINAL_NAME="${SPL}_boot_KSUNext_${KSU_VERSION}_SUSFS_${SUSFS_VERSION}.img"
-
+          FINAL_NAME="${SPL}_ab${KERNEL_BUILD_ID}_boot_KSUNext_${KSU_VERSION}_SUSFS_${SUSFS_VERSION}.img"
           mv new-boot.img "$WORKSPACE/dist/$FINAL_NAME"
 
           echo "artifact=$WORKSPACE/dist/$FINAL_NAME" >> "$GITHUB_OUTPUT"
-
           ls -lh "$WORKSPACE/dist/$FINAL_NAME"
 
       - name: Save build metadata
@@ -1460,37 +1010,47 @@ jobs:
         env:
           OTA_URL: ${{ inputs.ota_url }}
           SPL: ${{ steps.spl.outputs.spl }}
+          KERNEL_BUILD_ID: ${{ steps.stockkernel.outputs.kernel_build_id }}
+          KERNEL_ARCHIVE: ${{ steps.kernel.outputs.file_name }}
           KSU_VERSION: ${{ steps.versions.outputs.ksu_version }}
           SUSFS_VERSION: ${{ steps.versions.outputs.susfs_version }}
           ARTIFACT: ${{ steps.repack.outputs.artifact }}
         run: |
           set -euo pipefail
-      
+
           BASENAME="$(basename "$ARTIFACT")"
-      
           BUILD_REVISION="$(date +%Y%m%d%H%M)"
-      
           VERSION_CODE="$(
             strings "$ARTIFACT" |
-            grep -a "user/release-keys" |
+            grep -a 'user/release-keys' |
             head -1 |
             sed -n 's#.*\/\([0-9]\+\):user/release-keys#\1#p'
           )"
-      
-          cat > "$WORKSPACE/dist/build-metadata.json" <<EOF
-          {
-            "ota_url": "$OTA_URL",
-            "spl": "$SPL",
-            "version_code": "$VERSION_CODE",
-            "ksu_version": "$KSU_VERSION",
-            "susfs_version": "$SUSFS_VERSION",
-            "build_revision": "$BUILD_REVISION",
-            "boot_filename": "$BASENAME"
-          }
-          EOF
-      
+
+          jq -n \
+            --arg ota_url "$OTA_URL" \
+            --arg spl "$SPL" \
+            --arg version_code "$VERSION_CODE" \
+            --arg kernel_build_id "$KERNEL_BUILD_ID" \
+            --arg kernel_archive "$KERNEL_ARCHIVE" \
+            --arg ksu_version "$KSU_VERSION" \
+            --arg susfs_version "$SUSFS_VERSION" \
+            --arg build_revision "$BUILD_REVISION" \
+            --arg boot_filename "$BASENAME" \
+            '{
+              ota_url: $ota_url,
+              spl: $spl,
+              version_code: $version_code,
+              kernel_build_id: $kernel_build_id,
+              kernel_archive: $kernel_archive,
+              ksu_version: $ksu_version,
+              susfs_version: $susfs_version,
+              build_revision: $build_revision,
+              boot_filename: $boot_filename
+            }' > "$WORKSPACE/dist/build-metadata.json"
+
           cat "$WORKSPACE/dist/build-metadata.json"
-          
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
