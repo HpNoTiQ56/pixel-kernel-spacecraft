@@ -285,31 +285,73 @@ jobs:
 
           echo "=== Boot sélectionné ==="
 
+          test -s "$BOOT_IMG"
+
           ls -lh "$BOOT_IMG"
           file "$BOOT_IMG"
           sha256sum "$BOOT_IMG"
 
           echo
-          echo "=== Linux version ==="
+          echo "=== Identification du kernel ==="
 
-          LINUX_VERSION="$(
+          KERNEL_RELEASE="$(
             strings "$BOOT_IMG" \
-              | grep -a -m1 'Linux version'
+              | grep -aoE '[0-9]+\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
+              | head -n1 \
+              || true
           )"
 
-          if [ -z "$LINUX_VERSION" ]; then
-            echo "::error::Linux version introuvable dans le boot"
+          if [ -z "$KERNEL_RELEASE" ]; then
+            echo "::error::Version du kernel introuvable dans le boot"
+            echo
+            echo "=== Diagnostic ==="
+
+            strings "$BOOT_IMG" \
+              | grep -a -m20 -E 'android[0-9]+|PREEMPT|kleaf|ab[0-9]+' \
+              || true
+
             exit 1
           fi
 
-          echo "$LINUX_VERSION"
+          echo "KERNEL_RELEASE=$KERNEL_RELEASE"
 
           echo
           echo "=== PREEMPT ==="
 
-          strings "$BOOT_IMG" \
-            | grep -a -m5 'PREEMPT' \
-            || true
+          PREEMPT_LINE="$(
+            strings "$BOOT_IMG" \
+              | grep -a -m1 '^#1 SMP PREEMPT ' \
+              || true
+          )"
+
+          if [ -z "$PREEMPT_LINE" ]; then
+            echo "::error::Ligne PREEMPT introuvable dans le boot"
+            exit 1
+          fi
+
+          echo "$PREEMPT_LINE"
+
+          echo
+          echo "=== GKI Build ID ==="
+
+          GKI_BUILD_ID="$(
+            printf '%s\n' "$KERNEL_RELEASE" \
+              | grep -aoE 'ab[0-9]+' \
+              | head -n1 \
+              | sed 's/^ab//' \
+              || true
+          )"
+
+          if [ -z "$GKI_BUILD_ID" ]; then
+            echo "::error::Build ID GKI introuvable"
+            exit 1
+          fi
+
+          echo "GKI_BUILD_ID=$GKI_BUILD_ID"
+
+          echo
+          echo "=== Boot validé ==="
+          
 
       - name: Download stock OTA
         shell: bash
@@ -554,12 +596,11 @@ jobs:
           rm -f "$OUTPUT_OTA"
 
           echo "=== Boot utilisé par avbroot ==="
-
+          
+          ls -lh "$BOOT_IMG"
+          file "$BOOT_IMG"
           sha256sum "$BOOT_IMG"
-
-          strings "$BOOT_IMG" \
-            | grep -a -m1 'Linux version'
-
+          
           echo
           echo "=== Patch et signature OTA ==="
 
@@ -649,23 +690,23 @@ jobs:
           fi
 
           echo "=== Boot source ==="
-
           sha256sum "$SOURCE_BOOT"
-
-          strings "$SOURCE_BOOT" \
-            | grep -a -m1 'Linux version'
-
+          
           echo
           echo "=== Boot extrait de l'OTA ==="
-
           sha256sum boot.img
-
+          
+          echo
+          echo "=== Kernel embarqué ==="
+          
           strings boot.img \
-            | grep -a -m1 'Linux version'
-
+            | grep -aoE '[0-9]+\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
+            | head -n1 \
+            || true
+          
           echo
           echo "=== PREEMPT OTA ==="
-
+          
           strings boot.img \
             | grep -a -m5 'PREEMPT' \
             || true
