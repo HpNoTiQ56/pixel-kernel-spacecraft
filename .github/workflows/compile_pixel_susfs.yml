@@ -1424,24 +1424,7 @@ jobs:
 
           test -x "$PAYLOAD_VENV/bin/payload_dumper"
 
-      - name: Install MagiskBoot
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          MAGISKBOOT="$WORKSPACE/tools/magiskboot"
-
-          if [ ! -x "$MAGISKBOOT" ]; then
-            cd "$WORKSPACE/tools"
-            curl --fail --location --silent --show-error               "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk"               --output magisk.apk
-            unzip -o -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
-            mv libmagiskboot.so magiskboot
-            chmod +x magiskboot
-          fi
-
-          test -x "$MAGISKBOOT"
-
-      - name: Extract boot init_boot and ABL from OTA
+      - name: Extract init_boot from OTA
         id: ota
         shell: bash
         env:
@@ -1460,200 +1443,75 @@ jobs:
               ;;
           esac
 
+          test -x "$PAYLOAD_DUMPER"
+
           rm -rf "$OTA_DIR"
           mkdir -p "$OTA_DIR"
           cd "$OTA_DIR"
 
-          "$PAYLOAD_DUMPER" --partitions boot,init_boot,abl "$OTA_URL"
+          echo "=== Extraction de init_boot uniquement ==="
 
-          BOOT_IMG="$OTA_DIR/output/boot.img"
+          "$PAYLOAD_DUMPER" \
+            --partitions init_boot \
+            "$OTA_URL"
+
           INIT_BOOT_IMG="$OTA_DIR/output/init_boot.img"
-          ABL_IMG="$OTA_DIR/output/abl.img"
 
-          test -s "$BOOT_IMG"
-          test -s "$INIT_BOOT_IMG"
-          test -s "$ABL_IMG"
+          if [ ! -s "$INIT_BOOT_IMG" ]; then
+            echo "::error::init_boot.img absent après extraction"
+            find "$OTA_DIR" -maxdepth 3 -type f -ls || true
+            exit 1
+          fi
+
+          OTA_URL_NO_QUERY="${OTA_URL%%\?*}"
+          OTA_FILENAME="${OTA_URL_NO_QUERY##*/}"
+
+          BUILD_DATE_SHORT="$(
+            printf '%s\n' "$OTA_FILENAME" \
+              | grep -aoE '[0-9]{6}' \
+              | head -n1 \
+              || true
+          )"
+
+          if ! printf '%s' "$BUILD_DATE_SHORT" | grep -Eq '^[0-9]{6}$'; then
+            echo "::error::Date de build YYMMDD introuvable dans le nom OTA : $OTA_FILENAME"
+            exit 1
+          fi
+
+          SPL="20${BUILD_DATE_SHORT:0:2}-${BUILD_DATE_SHORT:2:2}-${BUILD_DATE_SHORT:4:2}"
 
           {
-            echo "boot_img=$BOOT_IMG"
             echo "init_boot_img=$INIT_BOOT_IMG"
-            echo "abl_img=$ABL_IMG"
-          } >> "$GITHUB_OUTPUT"
-
-          ls -lh "$BOOT_IMG" "$INIT_BOOT_IMG" "$ABL_IMG"
-
-      - name: Extract OTA metadata
-        id: meta
-        shell: bash
-        env:
-          BOOT_IMG: ${{ steps.ota.outputs.boot_img }}
-          ABL_IMG: ${{ steps.ota.outputs.abl_img }}
-        run: |
-          set -euo pipefail
-
-          test -s "$BOOT_IMG"
-          test -s "$ABL_IMG"
-
-          echo "=== Analyse boot.img ==="
-
-          FULL_VERSION="$(
-            strings "$BOOT_IMG" \
-              | grep -a -m1 'Linux version ' \
-              || true
-          )"
-
-          if [ -z "$FULL_VERSION" ]; then
-            echo "::error::Linux version introuvable dans boot.img"
-
-            strings "$BOOT_IMG" \
-              | grep -a -m20 -E 'android[0-9]+|PREEMPT|kleaf|ab[0-9]+' \
-              || true
-
-            exit 1
-          fi
-
-          echo "FULL_VERSION=$FULL_VERSION"
-
-          GKI_BUILD_ID="$(
-            printf '%s\n' "$FULL_VERSION" \
-              | grep -aoE 'ab[0-9]+' \
-              | head -n1 \
-              | sed 's/^ab//' \
-              || true
-          )"
-
-          KERNEL_SERIES="$(
-            printf '%s\n' "$FULL_VERSION" \
-              | grep -aoE '[0-9]+\.[0-9]+' \
-              | head -n1 \
-              || true
-          )"
-
-          ANDROID_KMI="$(
-            printf '%s\n' "$FULL_VERSION" \
-              | grep -aoE 'android[0-9]+-[0-9]+' \
-              | head -n1 \
-              || true
-          )"
-
-          if [ -z "$GKI_BUILD_ID" ]; then
-            echo "::error::GKI build ID introuvable"
-            echo "FULL_VERSION=$FULL_VERSION"
-            exit 1
-          fi
-
-          if [ -z "$KERNEL_SERIES" ]; then
-            echo "::error::Série kernel introuvable"
-            echo "FULL_VERSION=$FULL_VERSION"
-            exit 1
-          fi
-
-          if [ -z "$ANDROID_KMI" ]; then
-            echo "::error::Android KMI introuvable"
-            echo "FULL_VERSION=$FULL_VERSION"
-            exit 1
-          fi
-
-          KMI="${KERNEL_SERIES}-${ANDROID_KMI}"
-          LKM_KMI="${ANDROID_KMI}.${KERNEL_SERIES}"
-
-          echo
-          echo "=== Analyse abl.img ==="
-
-          BOOTLOADER_VERSION="$(
-            strings "$ABL_IMG" \
-              | grep -a -m1 -E '^spacecraft-[0-9]+\.[0-9]+-[0-9]+$' \
-              || true
-          )"
-
-          if [ -z "$BOOTLOADER_VERSION" ]; then
-            echo "::error::Version Spacecraft introuvable dans abl.img"
-
-            strings "$ABL_IMG" \
-              | grep -a -m50 -E -i 'spacecraft|bootloader|[0-9]{7,8}' \
-              || true
-
-            exit 1
-          fi
-
-          SPACECRAFT_BUILD_ID="$(
-            printf '%s\n' "$BOOTLOADER_VERSION" \
-              | grep -aoE '[0-9]+$' \
-              || true
-          )"
-
-          if [ -z "$SPACECRAFT_BUILD_ID" ]; then
-            echo "::error::Build ID Spacecraft introuvable"
-            echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
-            exit 1
-          fi
-
-          echo
-          echo "=== Extraction SPL ==="
-
-          SPL="$(
-            strings "$BOOT_IMG" \
-              | awk '
-                  /com.android.build.boot.security_patch/ {
-                    getline
-                    print
-                    exit
-                  }
-                ' \
-              || true
-          )"
-
-          if [ -z "$SPL" ]; then
-            echo "::error::SPL introuvable dans boot.img"
-
-            strings "$BOOT_IMG" \
-              | grep -a -m20 -E 'security_patch|20[0-9]{2}-[0-9]{2}-[0-9]{2}' \
-              || true
-
-            exit 1
-          fi
-
-          echo
-          echo "========================================"
-          echo "MÉTADONNÉES OTA"
-          echo "========================================"
-          echo
-          echo "FULL_VERSION=$FULL_VERSION"
-          echo "GKI_BUILD_ID=$GKI_BUILD_ID"
-          echo "KERNEL_SERIES=$KERNEL_SERIES"
-          echo "ANDROID_KMI=$ANDROID_KMI"
-          echo "KMI=$KMI"
-          echo "LKM_KMI=$LKM_KMI"
-          echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
-          echo "SPACECRAFT_BUILD_ID=$SPACECRAFT_BUILD_ID"
-          echo "SPL=$SPL"
-
-          {
-            echo "full_version=$FULL_VERSION"
-            echo "gki_build_id=$GKI_BUILD_ID"
-            echo "kernel_series=$KERNEL_SERIES"
-            echo "android_kmi=$ANDROID_KMI"
-            echo "kmi=$KMI"
-            echo "lkm_kmi=$LKM_KMI"
-            echo "bootloader_version=$BOOTLOADER_VERSION"
-            echo "spacecraft_build_id=$SPACECRAFT_BUILD_ID"
+            echo "ota_filename=$OTA_FILENAME"
             echo "spl=$SPL"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install latest KernelSU-Next ksud and matching LKM
+          echo "INIT_BOOT_IMG=$INIT_BOOT_IMG"
+          echo "OTA_FILENAME=$OTA_FILENAME"
+          echo "SPL=$SPL"
+          ls -lh "$INIT_BOOT_IMG"
+          file "$INIT_BOOT_IMG"
+
+      - name: Install KernelSU-Next v3.4.2 ksud and LKM
         id: ksunext
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          KMI: ${{ steps.meta.outputs.kmi }}
+          KSU_VERSION: "v3.4.2"
+          KSUD_ASSET: "ksud-x86_64-unknown-linux-musl"
+          LKM_ASSET: "aarch64_android16-6.12_kernelsu.ko"
         run: |
           set -euo pipefail
 
           TOOLS_DIR="$WORKSPACE/tools/ksunext"
-          RELEASE_JSON="$RUNNER_TEMP/ksunext-latest.json"
+          RELEASE_JSON="$RUNNER_TEMP/ksunext-v3.4.2.json"
 
           rm -rf "$TOOLS_DIR"
           mkdir -p "$TOOLS_DIR"
+
+          echo "=== KernelSU-Next $KSU_VERSION ==="
+          echo "KSUD_ASSET=$KSUD_ASSET"
+          echo "LKM_ASSET=$LKM_ASSET"
 
           curl \
             --fail \
@@ -1666,24 +1524,40 @@ jobs:
             --header "Accept: application/vnd.github+json" \
             --header "Authorization: Bearer $GH_TOKEN" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest" \
+            "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VERSION}" \
             --output "$RELEASE_JSON"
 
-          RELEASE_TAG="$(jq -r '.tag_name // empty' "$RELEASE_JSON")"
+          ACTUAL_TAG="$(jq -r '.tag_name // empty' "$RELEASE_JSON")"
 
-          if [ -z "$RELEASE_TAG" ]; then
-            echo "::error::Release KernelSU-Next latest introuvable"
+          if [ "$ACTUAL_TAG" != "$KSU_VERSION" ]; then
+            echo "::error::Release incorrect. Attendu=$KSU_VERSION Obtenu=$ACTUAL_TAG"
             exit 1
           fi
 
-          LKM_ASSET="aarch64_${KMI}_kernelsu.ko"
+          KSUD_URL="$(jq -r --arg name "$KSUD_ASSET" '.assets[] | select(.name == $name) | .browser_download_url' "$RELEASE_JSON")"
           LKM_URL="$(jq -r --arg name "$LKM_ASSET" '.assets[] | select(.name == $name) | .browser_download_url' "$RELEASE_JSON")"
 
-          if [ -z "$LKM_URL" ]; then
-            echo "::error::LKM $LKM_ASSET absent de $RELEASE_TAG"
+          if [ -z "$KSUD_URL" ]; then
+            echo "::error::Asset ksud absent : $KSUD_ASSET"
             jq -r '.assets[].name' "$RELEASE_JSON"
             exit 1
           fi
+
+          if [ -z "$LKM_URL" ]; then
+            echo "::error::Asset LKM absent : $LKM_ASSET"
+            jq -r '.assets[].name' "$RELEASE_JSON"
+            exit 1
+          fi
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$KSUD_URL" \
+            --output "$TOOLS_DIR/ksud"
 
           curl \
             --fail \
@@ -1695,74 +1569,36 @@ jobs:
             "$LKM_URL" \
             --output "$TOOLS_DIR/kernelsu.ko"
 
+          test -s "$TOOLS_DIR/ksud"
           test -s "$TOOLS_DIR/kernelsu.ko"
-
-          KSUD_ASSET_JSON="$(jq -c '[.assets[] | select((.name | ascii_downcase | contains("ksud")) and ((.name | ascii_downcase | contains("x86_64")) or (.name | ascii_downcase | contains("amd64"))))] | .[0] // empty' "$RELEASE_JSON")"
-
-          if [ -z "$KSUD_ASSET_JSON" ]; then
-            echo "::error::Aucun ksud Linux x86_64 dans $RELEASE_TAG"
-            jq -r '.assets[].name' "$RELEASE_JSON"
-            exit 1
-          fi
-
-          KSUD_ASSET="$(jq -r '.name' <<< "$KSUD_ASSET_JSON")"
-          KSUD_URL="$(jq -r '.browser_download_url' <<< "$KSUD_ASSET_JSON")"
-          KSUD_DOWNLOAD="$TOOLS_DIR/$KSUD_ASSET"
-
-          curl \
-            --fail \
-            --location \
-            --retry 5 \
-            --retry-all-errors \
-            --retry-delay 10 \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            "$KSUD_URL" \
-            --output "$KSUD_DOWNLOAD"
-
-          test -s "$KSUD_DOWNLOAD"
-
-          case "$KSUD_ASSET" in
-            *.zip)
-              EXTRACT_DIR="$TOOLS_DIR/ksud-extract"
-              mkdir -p "$EXTRACT_DIR"
-              unzip -q "$KSUD_DOWNLOAD" -d "$EXTRACT_DIR"
-              KSUD_FOUND="$(find "$EXTRACT_DIR" -type f -name ksud -print -quit)"
-              ;;
-            *.tar.gz|*.tgz)
-              EXTRACT_DIR="$TOOLS_DIR/ksud-extract"
-              mkdir -p "$EXTRACT_DIR"
-              tar -xzf "$KSUD_DOWNLOAD" -C "$EXTRACT_DIR"
-              KSUD_FOUND="$(find "$EXTRACT_DIR" -type f -name ksud -print -quit)"
-              ;;
-            *)
-              KSUD_FOUND="$KSUD_DOWNLOAD"
-              ;;
-          esac
-
-          if [ -z "${KSUD_FOUND:-}" ] || [ ! -s "$KSUD_FOUND" ]; then
-            echo "::error::Binaire ksud introuvable"
-            exit 1
-          fi
-
-          cp "$KSUD_FOUND" "$TOOLS_DIR/ksud"
           chmod 700 "$TOOLS_DIR/ksud"
 
+          echo "=== Vérification ksud ==="
           file "$TOOLS_DIR/ksud"
           "$TOOLS_DIR/ksud" --version
 
+          echo "=== Vérification LKM ==="
+          ls -lh "$TOOLS_DIR/kernelsu.ko"
+          file "$TOOLS_DIR/kernelsu.ko"
+
+          KSUD_SHA256="$(sha256sum "$TOOLS_DIR/ksud" | awk '{print $1}')"
           LKM_SHA256="$(sha256sum "$TOOLS_DIR/kernelsu.ko" | awk '{print $1}')"
 
+          echo "KSUD_SHA256=$KSUD_SHA256"
+          echo "LKM_SHA256=$LKM_SHA256"
+
+          echo "=== Interface boot-patch ==="
+          "$TOOLS_DIR/ksud" boot-patch --help
+
           {
-            echo "release_tag=$RELEASE_TAG"
+            echo "release_tag=$ACTUAL_TAG"
             echo "ksud=$TOOLS_DIR/ksud"
+            echo "ksud_asset=$KSUD_ASSET"
+            echo "ksud_sha256=$KSUD_SHA256"
             echo "module=$TOOLS_DIR/kernelsu.ko"
             echo "module_asset=$LKM_ASSET"
             echo "module_sha256=$LKM_SHA256"
           } >> "$GITHUB_OUTPUT"
-
-          echo "KernelSU-Next=$RELEASE_TAG"
-          echo "KSUD=$KSUD_ASSET"
-          echo "LKM=$LKM_ASSET"
 
       - name: Patch init_boot with KernelSU-Next
         id: patch
@@ -1771,12 +1607,10 @@ jobs:
           KSUD_BIN: ${{ steps.ksunext.outputs.ksud }}
           KSU_MODULE: ${{ steps.ksunext.outputs.module }}
           INIT_BOOT_IMG: ${{ steps.ota.outputs.init_boot_img }}
-          KMI: ${{ steps.meta.outputs.kmi }}
         run: |
           set -euo pipefail
 
           PATCH_DIR="$WORKSPACE/dist/init-boot-patch"
-          MAGISKBOOT="$WORKSPACE/tools/magiskboot"
 
           rm -rf "$PATCH_DIR"
           mkdir -p "$PATCH_DIR"
@@ -1791,19 +1625,12 @@ jobs:
           if grep -q -- '--module' <<< "$HELP"; then
             ARGS+=(--module "$KSU_MODULE")
           else
-            echo "::error::Ce ksud ne propose pas l'option --module nécessaire au mode LKM"
+            echo "::error::ksud ${{ steps.ksunext.outputs.release_tag }} ne propose pas --module"
             exit 1
           fi
 
-          if grep -q -- '--magiskboot' <<< "$HELP"; then
-            ARGS+=(--magiskboot "$MAGISKBOOT")
-          fi
-
-          if grep -q -- '--kmi' <<< "$HELP"; then
-            ARGS+=(--kmi "$KMI")
-          fi
-
           DECLARED_OUTPUT=""
+
           if grep -q -- '--out' <<< "$HELP"; then
             DECLARED_OUTPUT="$PATCH_DIR/init_boot-patched.img"
             ARGS+=(--out "$DECLARED_OUTPUT")
@@ -1819,7 +1646,15 @@ jobs:
             PATCHED_OUTPUT="$DECLARED_OUTPUT"
           else
             PATCHED_OUTPUT="$(
-              find "$PATCH_DIR" -maxdepth 2 -type f -name '*.img'                 ! -name 'init_boot-stock.img' -printf '%T@ %p\n'                 | sort -nr | head -n1 | cut -d' ' -f2-
+              find "$PATCH_DIR" \
+                -maxdepth 2 \
+                -type f \
+                -name '*.img' \
+                ! -name 'init_boot-stock.img' \
+                -printf '%T@ %p\n' \
+                | sort -nr \
+                | head -n1 \
+                | cut -d' ' -f2-
             )"
           fi
 
@@ -1832,20 +1667,18 @@ jobs:
           echo "patched_image=$PATCHED_OUTPUT" >> "$GITHUB_OUTPUT"
           ls -lh "$PATCHED_OUTPUT"
           file "$PATCHED_OUTPUT"
+          sha256sum "$PATCHED_OUTPUT"
 
       - name: Create unified init_boot artifact
         shell: bash
         env:
           OTA_URL: ${{ inputs.ota_url }}
           SOURCE_IMAGE: ${{ steps.patch.outputs.patched_image }}
-          SPL: ${{ steps.meta.outputs.spl }}
-          KMI: ${{ steps.meta.outputs.kmi }}
-          GKI_BUILD_ID: ${{ steps.meta.outputs.gki_build_id }}
-          SPACECRAFT_BUILD_ID: ${{ steps.meta.outputs.spacecraft_build_id }}
-          BOOTLOADER_VERSION: ${{ steps.meta.outputs.bootloader_version }}
-          KSUD_BIN: ${{ steps.ksunext.outputs.ksud }}
-          KSU_MODULE: ${{ steps.ksunext.outputs.module }}
+          SPL: ${{ steps.ota.outputs.spl }}
           KSU_RELEASE: ${{ steps.ksunext.outputs.release_tag }}
+          KSUD_ASSET: ${{ steps.ksunext.outputs.ksud_asset }}
+          KSUD_SHA256: ${{ steps.ksunext.outputs.ksud_sha256 }}
+          KSU_MODULE_ASSET: ${{ steps.ksunext.outputs.module_asset }}
           KSU_MODULE_SHA256: ${{ steps.ksunext.outputs.module_sha256 }}
         run: |
           set -euo pipefail
@@ -1855,15 +1688,27 @@ jobs:
           META_JSON="$PACKAGE_DIR/build-metadata.json"
 
           test -s "$SOURCE_IMAGE"
+
           rm -rf "$PACKAGE_DIR"
           mkdir -p "$PACKAGE_DIR"
           cp "$SOURCE_IMAGE" "$PATCHED_IMAGE"
 
           BUILD_REVISION="$(date -u +%Y%m%d%H%M)"
-          KSU_VERSION="$KSU_RELEASE"
-          MODULE_SHA256="$KSU_MODULE_SHA256"
 
-          jq -n             --arg mode "init_boot"             --arg image_type "init_boot"             --arg image_filename "patched-image.img"             --arg ota_url "$OTA_URL"             --arg spl "$SPL"             --arg version_code ""             --arg kmi "$KMI"             --arg gki_build_id "$GKI_BUILD_ID"             --arg spacecraft_build_id "$SPACECRAFT_BUILD_ID"             --arg bootloader_version "$BOOTLOADER_VERSION"             --arg ksu_version "$KSU_VERSION"             --arg module_sha256 "$MODULE_SHA256"             --arg build_revision "$BUILD_REVISION"             '{
+          jq -n \
+            --arg mode "init_boot" \
+            --arg image_type "init_boot" \
+            --arg image_filename "patched-image.img" \
+            --arg ota_url "$OTA_URL" \
+            --arg spl "$SPL" \
+            --arg version_code "" \
+            --arg ksu_version "$KSU_RELEASE" \
+            --arg ksud_asset "$KSUD_ASSET" \
+            --arg ksud_sha256 "$KSUD_SHA256" \
+            --arg module_asset "$KSU_MODULE_ASSET" \
+            --arg module_sha256 "$KSU_MODULE_SHA256" \
+            --arg build_revision "$BUILD_REVISION" \
+            '{
               mode: $mode,
               image_type: $image_type,
               image_filename: $image_filename,
@@ -1871,12 +1716,11 @@ jobs:
               ota_url: $ota_url,
               spl: $spl,
               version_code: $version_code,
-              kmi: $kmi,
-              gki_build_id: $gki_build_id,
-              spacecraft_build_id: $spacecraft_build_id,
-              bootloader_version: $bootloader_version,
               kernel_archive: null,
               ksu_version: $ksu_version,
+              ksud_asset: $ksud_asset,
+              ksud_sha256: $ksud_sha256,
+              ksu_module_asset: $module_asset,
               ksu_module_sha256: $module_sha256,
               susfs_version: "none",
               nomount: false,
