@@ -8,16 +8,6 @@ on:
         required: false
         default: ""
         type: string
-      ksud_path:
-        description: "Chemin local du binaire ksud Linux utilisé en mode init_boot"
-        required: false
-        default: "/home/aurelien/workspace/tools/ksud"
-        type: string
-      ksu_module_path:
-        description: "Chemin local du module kernelsu.ko utilisé en mode init_boot"
-        required: false
-        default: "/home/aurelien/workspace/tools/kernelsu.ko"
-        type: string
       ota_url:
         description: "URL OTA Google"
         required: true
@@ -1400,30 +1390,6 @@ jobs:
       - name: Checkout workflow repository
         uses: actions/checkout@v4
 
-      - name: Verify init_boot tools
-        shell: bash
-        env:
-          KSUD_BIN: ${{ inputs.ksud_path }}
-          KSU_MODULE: ${{ inputs.ksu_module_path }}
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$WORKSPACE/tools" "$WORKSPACE/ota-initboot" "$WORKSPACE/dist"
-
-          if [ ! -x "$KSUD_BIN" ]; then
-            echo "::error::Binaire ksud absent ou non exécutable : $KSUD_BIN"
-            exit 1
-          fi
-
-          if [ ! -s "$KSU_MODULE" ]; then
-            echo "::error::Module KernelSU-Next absent : $KSU_MODULE"
-            exit 1
-          fi
-
-          "$KSUD_BIN" --version || true
-          ls -lh "$KSU_MODULE"
-          file "$KSU_MODULE"
-
       - name: Install payload-dumper
         shell: bash
         run: |
@@ -1556,12 +1522,136 @@ jobs:
           echo "BOOTLOADER_VERSION=$BOOTLOADER_VERSION"
           echo "SPL=$SPL"
 
+      - name: Install latest KernelSU-Next ksud and matching LKM
+        id: ksunext
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KMI: ${{ steps.meta.outputs.kmi }}
+        run: |
+          set -euo pipefail
+
+          TOOLS_DIR="$WORKSPACE/tools/ksunext"
+          RELEASE_JSON="$RUNNER_TEMP/ksunext-latest.json"
+
+          rm -rf "$TOOLS_DIR"
+          mkdir -p "$TOOLS_DIR"
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/latest" \
+            --output "$RELEASE_JSON"
+
+          RELEASE_TAG="$(jq -r '.tag_name // empty' "$RELEASE_JSON")"
+
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "::error::Release KernelSU-Next latest introuvable"
+            exit 1
+          fi
+
+          LKM_ASSET="aarch64_${KMI}_kernelsu.ko"
+          LKM_URL="$(jq -r --arg name "$LKM_ASSET" '.assets[] | select(.name == $name) | .browser_download_url' "$RELEASE_JSON")"
+
+          if [ -z "$LKM_URL" ]; then
+            echo "::error::LKM $LKM_ASSET absent de $RELEASE_TAG"
+            jq -r '.assets[].name' "$RELEASE_JSON"
+            exit 1
+          fi
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$LKM_URL" \
+            --output "$TOOLS_DIR/kernelsu.ko"
+
+          test -s "$TOOLS_DIR/kernelsu.ko"
+
+          KSUD_ASSET_JSON="$(jq -c '[.assets[] | select((.name | ascii_downcase | contains("ksud")) and ((.name | ascii_downcase | contains("x86_64")) or (.name | ascii_downcase | contains("amd64"))))] | .[0] // empty' "$RELEASE_JSON")"
+
+          if [ -z "$KSUD_ASSET_JSON" ]; then
+            echo "::error::Aucun ksud Linux x86_64 dans $RELEASE_TAG"
+            jq -r '.assets[].name' "$RELEASE_JSON"
+            exit 1
+          fi
+
+          KSUD_ASSET="$(jq -r '.name' <<< "$KSUD_ASSET_JSON")"
+          KSUD_URL="$(jq -r '.browser_download_url' <<< "$KSUD_ASSET_JSON")"
+          KSUD_DOWNLOAD="$TOOLS_DIR/$KSUD_ASSET"
+
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 10 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$KSUD_URL" \
+            --output "$KSUD_DOWNLOAD"
+
+          test -s "$KSUD_DOWNLOAD"
+
+          case "$KSUD_ASSET" in
+            *.zip)
+              EXTRACT_DIR="$TOOLS_DIR/ksud-extract"
+              mkdir -p "$EXTRACT_DIR"
+              unzip -q "$KSUD_DOWNLOAD" -d "$EXTRACT_DIR"
+              KSUD_FOUND="$(find "$EXTRACT_DIR" -type f -name ksud -print -quit)"
+              ;;
+            *.tar.gz|*.tgz)
+              EXTRACT_DIR="$TOOLS_DIR/ksud-extract"
+              mkdir -p "$EXTRACT_DIR"
+              tar -xzf "$KSUD_DOWNLOAD" -C "$EXTRACT_DIR"
+              KSUD_FOUND="$(find "$EXTRACT_DIR" -type f -name ksud -print -quit)"
+              ;;
+            *)
+              KSUD_FOUND="$KSUD_DOWNLOAD"
+              ;;
+          esac
+
+          if [ -z "${KSUD_FOUND:-}" ] || [ ! -s "$KSUD_FOUND" ]; then
+            echo "::error::Binaire ksud introuvable"
+            exit 1
+          fi
+
+          cp "$KSUD_FOUND" "$TOOLS_DIR/ksud"
+          chmod 700 "$TOOLS_DIR/ksud"
+
+          file "$TOOLS_DIR/ksud"
+          "$TOOLS_DIR/ksud" --version
+
+          LKM_SHA256="$(sha256sum "$TOOLS_DIR/kernelsu.ko" | awk '{print $1}')"
+
+          {
+            echo "release_tag=$RELEASE_TAG"
+            echo "ksud=$TOOLS_DIR/ksud"
+            echo "module=$TOOLS_DIR/kernelsu.ko"
+            echo "module_asset=$LKM_ASSET"
+            echo "module_sha256=$LKM_SHA256"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "KernelSU-Next=$RELEASE_TAG"
+          echo "KSUD=$KSUD_ASSET"
+          echo "LKM=$LKM_ASSET"
+
       - name: Patch init_boot with KernelSU-Next
         id: patch
         shell: bash
         env:
-          KSUD_BIN: ${{ inputs.ksud_path }}
-          KSU_MODULE: ${{ inputs.ksu_module_path }}
+          KSUD_BIN: ${{ steps.ksunext.outputs.ksud }}
+          KSU_MODULE: ${{ steps.ksunext.outputs.module }}
           INIT_BOOT_IMG: ${{ steps.ota.outputs.init_boot_img }}
           KMI: ${{ steps.meta.outputs.kmi }}
         run: |
@@ -1635,8 +1725,10 @@ jobs:
           GKI_BUILD_ID: ${{ steps.meta.outputs.gki_build_id }}
           SPACECRAFT_BUILD_ID: ${{ steps.meta.outputs.spacecraft_build_id }}
           BOOTLOADER_VERSION: ${{ steps.meta.outputs.bootloader_version }}
-          KSUD_BIN: ${{ inputs.ksud_path }}
-          KSU_MODULE: ${{ inputs.ksu_module_path }}
+          KSUD_BIN: ${{ steps.ksunext.outputs.ksud }}
+          KSU_MODULE: ${{ steps.ksunext.outputs.module }}
+          KSU_RELEASE: ${{ steps.ksunext.outputs.release_tag }}
+          KSU_MODULE_SHA256: ${{ steps.ksunext.outputs.module_sha256 }}
         run: |
           set -euo pipefail
 
@@ -1650,8 +1742,8 @@ jobs:
           cp "$SOURCE_IMAGE" "$PATCHED_IMAGE"
 
           BUILD_REVISION="$(date -u +%Y%m%d%H%M)"
-          KSU_VERSION="$($KSUD_BIN --version 2>/dev/null | head -n1 || true)"
-          MODULE_SHA256="$(sha256sum "$KSU_MODULE" | awk '{print $1}')"
+          KSU_VERSION="$KSU_RELEASE"
+          MODULE_SHA256="$KSU_MODULE_SHA256"
 
           jq -n             --arg mode "init_boot"             --arg image_type "init_boot"             --arg image_filename "patched-image.img"             --arg ota_url "$OTA_URL"             --arg spl "$SPL"             --arg version_code ""             --arg kmi "$KMI"             --arg gki_build_id "$GKI_BUILD_ID"             --arg spacecraft_build_id "$SPACECRAFT_BUILD_ID"             --arg bootloader_version "$BOOTLOADER_VERSION"             --arg ksu_version "$KSU_VERSION"             --arg module_sha256 "$MODULE_SHA256"             --arg build_revision "$BUILD_REVISION"             '{
               mode: $mode,
