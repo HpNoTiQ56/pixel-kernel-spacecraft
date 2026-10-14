@@ -1147,70 +1147,18 @@ jobs:
             '^config NOMOUNT' \
             fs/nomount/Kconfig
 
-          echo
-          echo "=== Kconfig NoMount original ==="
+          grep -q \
+            '^[[:space:]]*default y' \
+            fs/nomount/Kconfig
 
+          echo
+          echo "=== Kconfig NoMount ==="
           cat fs/nomount/Kconfig
 
           echo
-          echo "=== Activation CONFIG_NOMOUNT=y par défaut ==="
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("fs/nomount/Kconfig")
-          text = path.read_text()
-
-          marker = "config NOMOUNT"
-          start = text.find(marker)
-
-          if start == -1:
-              raise SystemExit("config NOMOUNT introuvable")
-
-          next_config = text.find("\nconfig ", start + len(marker))
-
-          if next_config == -1:
-              next_config = len(text)
-
-          before = text[:start]
-          block = text[start:next_config]
-          after = text[next_config:]
-
-          lines = block.splitlines()
-
-          default_found = False
-
-          for i, line in enumerate(lines):
-              if line.strip().startswith("default "):
-                  lines[i] = "\tdefault y"
-                  default_found = True
-                  break
-
-          if not default_found:
-              insert_at = 1
-
-              for i, line in enumerate(lines[1:], start=1):
-                  if line.strip().startswith(("bool ", "tristate ")):
-                      insert_at = i + 1
-                      break
-
-              lines.insert(insert_at, "\tdefault y")
-
-          new_block = "\n".join(lines)
-
-          if block.endswith("\n"):
-              new_block += "\n"
-
-          path.write_text(before + new_block + after)
-          PY
-
-          echo
-          echo "=== Kconfig NoMount modifié ==="
-
-          cat fs/nomount/Kconfig
-
-          echo
-          echo "=== Validation
+          echo "=== NoMount validé ==="
+          echo "CONFIG_NOMOUNT=y"
+          
       - name: Build GKI from sources
         shell: bash
         env:
