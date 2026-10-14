@@ -1424,7 +1424,7 @@ jobs:
 
           test -x "$PAYLOAD_VENV/bin/payload_dumper"
 
-      - name: Extract init_boot from OTA
+      - name: Extract boot and init_boot from OTA
         id: ota
         shell: bash
         env:
@@ -1436,32 +1436,113 @@ jobs:
           OTA_DIR="$WORKSPACE/ota-initboot"
 
           case "$OTA_URL" in
-            http://*|https://*) ;;
+            http://*|https://*)
+              ;;
             *)
               echo "::error::URL OTA invalide : $OTA_URL"
               exit 1
               ;;
           esac
 
-          test -x "$PAYLOAD_DUMPER"
+          if [ ! -x "$PAYLOAD_DUMPER" ]; then
+            echo "::error::payload_dumper introuvable : $PAYLOAD_DUMPER"
+            exit 1
+          fi
 
           rm -rf "$OTA_DIR"
           mkdir -p "$OTA_DIR"
+
           cd "$OTA_DIR"
 
-          echo "=== Extraction de init_boot uniquement ==="
+          echo "=== Extraction de boot et init_boot ==="
 
           "$PAYLOAD_DUMPER" \
-            --partitions init_boot \
+            --partitions boot,init_boot \
             "$OTA_URL"
 
+          BOOT_IMG="$OTA_DIR/output/boot.img"
           INIT_BOOT_IMG="$OTA_DIR/output/init_boot.img"
+
+          if [ ! -s "$BOOT_IMG" ]; then
+            echo "::error::boot.img absent après extraction"
+            find "$OTA_DIR" -maxdepth 3 -type f -ls || true
+            exit 1
+          fi
 
           if [ ! -s "$INIT_BOOT_IMG" ]; then
             echo "::error::init_boot.img absent après extraction"
             find "$OTA_DIR" -maxdepth 3 -type f -ls || true
             exit 1
           fi
+
+          echo
+          echo "=== Images extraites ==="
+
+          ls -lh "$BOOT_IMG" "$INIT_BOOT_IMG"
+          file "$BOOT_IMG" "$INIT_BOOT_IMG"
+
+          echo
+          echo "=== Détection de la version du kernel ==="
+
+          KERNEL_RELEASE="$(
+            strings "$BOOT_IMG" \
+              | grep -aoE '[0-9]+\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+-g[0-9a-f]+-ab[0-9]+-4k' \
+              | head -n1 \
+              || true
+          )"
+
+          if [ -z "$KERNEL_RELEASE" ]; then
+            echo "::error::Version du kernel introuvable dans boot.img"
+
+            strings "$BOOT_IMG" \
+              | grep -a -m20 -E 'android[0-9]+|PREEMPT|kleaf|ab[0-9]+' \
+              || true
+
+            exit 1
+          fi
+
+          echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+
+          KERNEL_SERIES="$(
+            printf '%s\n' "$KERNEL_RELEASE" \
+              | grep -aoE '^[0-9]+\.[0-9]+' \
+              | head -n1 \
+              || true
+          )"
+
+          ANDROID_KMI="$(
+            printf '%s\n' "$KERNEL_RELEASE" \
+              | grep -aoE 'android[0-9]+-[0-9]+' \
+              | head -n1 \
+              || true
+          )"
+
+          GKI_BUILD_ID="$(
+            printf '%s\n' "$KERNEL_RELEASE" \
+              | grep -aoE 'ab[0-9]+' \
+              | head -n1 \
+              | sed 's/^ab//' \
+              || true
+          )"
+
+          if [ -z "$KERNEL_SERIES" ]; then
+            echo "::error::Série kernel introuvable dans : $KERNEL_RELEASE"
+            exit 1
+          fi
+
+          if [ -z "$ANDROID_KMI" ]; then
+            echo "::error::Android KMI introuvable dans : $KERNEL_RELEASE"
+            exit 1
+          fi
+
+          if [ -z "$GKI_BUILD_ID" ]; then
+            echo "::error::GKI Build ID introuvable dans : $KERNEL_RELEASE"
+            exit 1
+          fi
+
+          KMI="${KERNEL_SERIES}-${ANDROID_KMI}"
+          LKM_ID="${ANDROID_KMI}.${KERNEL_SERIES}"
+          LKM_ASSET="aarch64_${LKM_ID}_kernelsu.ko"
 
           OTA_URL_NO_QUERY="${OTA_URL%%\?*}"
           OTA_FILENAME="${OTA_URL_NO_QUERY##*/}"
@@ -1474,23 +1555,29 @@ jobs:
           )"
 
           if ! printf '%s' "$BUILD_DATE_SHORT" | grep -Eq '^[0-9]{6}$'; then
-            echo "::error::Date de build YYMMDD introuvable dans le nom OTA : $OTA_FILENAME"
+            echo "::error::Date YYMMDD introuvable dans le nom OTA : $OTA_FILENAME"
             exit 1
           fi
 
           SPL="20${BUILD_DATE_SHORT:0:2}-${BUILD_DATE_SHORT:2:2}-${BUILD_DATE_SHORT:4:2}"
 
-          {
-            echo "init_boot_img=$INIT_BOOT_IMG"
-            echo "ota_filename=$OTA_FILENAME"
-            echo "spl=$SPL"
-          } >> "$GITHUB_OUTPUT"
-
-          echo "INIT_BOOT_IMG=$INIT_BOOT_IMG"
+          echo
+          echo "========================================"
+          echo "MÉTADONNÉES DU MODE LKM"
+          echo "========================================"
           echo "OTA_FILENAME=$OTA_FILENAME"
           echo "SPL=$SPL"
-          ls -lh "$INIT_BOOT_IMG"
-          file "$INIT_BOOT_IMG"
+          echo "KERNEL_RELEASE=$KERNEL_RELEASE"
+          echo "KERNEL_SERIES=$KERNEL_SERIES"
+          echo "ANDROID_KMI=$ANDROID_KMI"
+          echo "GKI_BUILD_ID=$GKI_BUILD_ID"
+          echo "KMI=$KMI"
+          echo "LKM_ID=$LKM_ID"
+          echo "LKM_ASSET=$LKM_ASSET"
+
+          {
+            echo "boot_img=$BOOT_IMG"
+            echo "init_boot_img=$INIT_BOOT_IMG"
 
       - name: Install KernelSU-Next v3.4.2 ksud and LKM
         id: ksunext
@@ -1499,7 +1586,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KSU_VERSION: "v3.4.2"
           KSUD_ASSET: "ksud-x86_64-unknown-linux-musl"
-          LKM_ASSET: "aarch64_android16-6.12_kernelsu.ko"
+          LKM_ASSET: ${{ steps.ota.outputs.lkm_asset }}
         run: |
           set -euo pipefail
 
@@ -1611,63 +1698,46 @@ jobs:
           set -euo pipefail
 
           PATCH_DIR="$WORKSPACE/dist/init-boot-patch"
+          OUTPUT_NAME="init_boot-patched.img"
+          OUTPUT_IMG="$PATCH_DIR/$OUTPUT_NAME"
 
           rm -rf "$PATCH_DIR"
           mkdir -p "$PATCH_DIR"
-          cp "$INIT_BOOT_IMG" "$PATCH_DIR/init_boot-stock.img"
-          cd "$PATCH_DIR"
 
-          HELP="$($KSUD_BIN boot-patch --help 2>&1 || true)"
-          printf '%s\n' "$HELP"
+          echo "=== KernelSU-Next LKM patch ==="
+          echo "init_boot : $INIT_BOOT_IMG"
+          echo "LKM       : $KSU_MODULE"
+          echo "KMI       : $KMI"
+          echo "Output    : $OUTPUT_IMG"
 
-          ARGS=(boot-patch --boot "$PATCH_DIR/init_boot-stock.img")
+          "$KSUD_BIN" boot-patch \
+            --boot "$INIT_BOOT_IMG" \
+            --module "$KSU_MODULE" \
+            --kmi "$KMI" \
+            --out "$PATCH_DIR" \
+            --out-name "$OUTPUT_NAME"
 
-          if grep -q -- '--module' <<< "$HELP"; then
-            ARGS+=(--module "$KSU_MODULE")
-          else
-            echo "::error::ksud ${{ steps.ksunext.outputs.release_tag }} ne propose pas --module"
+          if [ ! -s "$OUTPUT_IMG" ]; then
+            echo "::error::init_boot patché non généré"
+
+            find "$PATCH_DIR" \
+              -maxdepth 2 \
+              -type f \
+              -ls \
+              || true
+
             exit 1
           fi
 
-          DECLARED_OUTPUT=""
-
-          if grep -q -- '--out' <<< "$HELP"; then
-            DECLARED_OUTPUT="$PATCH_DIR/init_boot-patched.img"
-            ARGS+=(--out "$DECLARED_OUTPUT")
-          fi
-
-          echo "=== Commande ksud ==="
-          printf '%q ' "$KSUD_BIN" "${ARGS[@]}"
           echo
+          echo "=== init_boot KernelSU-Next généré ==="
 
-          "$KSUD_BIN" "${ARGS[@]}"
+          ls -lh "$OUTPUT_IMG"
+          file "$OUTPUT_IMG"
+          sha256sum "$OUTPUT_IMG"
 
-          if [ -n "$DECLARED_OUTPUT" ] && [ -s "$DECLARED_OUTPUT" ]; then
-            PATCHED_OUTPUT="$DECLARED_OUTPUT"
-          else
-            PATCHED_OUTPUT="$(
-              find "$PATCH_DIR" \
-                -maxdepth 2 \
-                -type f \
-                -name '*.img' \
-                ! -name 'init_boot-stock.img' \
-                -printf '%T@ %p\n' \
-                | sort -nr \
-                | head -n1 \
-                | cut -d' ' -f2-
-            )"
-          fi
+          echo "patched_image=$OUTPUT_IMG" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$PATCHED_OUTPUT" ] || [ ! -s "$PATCHED_OUTPUT" ]; then
-            echo "::error::Aucune image init_boot patchée produite par ksud"
-            find "$PATCH_DIR" -maxdepth 3 -type f -ls || true
-            exit 1
-          fi
-
-          echo "patched_image=$PATCHED_OUTPUT" >> "$GITHUB_OUTPUT"
-          ls -lh "$PATCHED_OUTPUT"
-          file "$PATCHED_OUTPUT"
-          sha256sum "$PATCHED_OUTPUT"
 
       - name: Create unified init_boot artifact
         shell: bash
