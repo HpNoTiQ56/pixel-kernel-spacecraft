@@ -1030,17 +1030,17 @@ jobs:
           mv -f "$CSIG_PART" "$CSIG_FINAL"
 
           echo
-          echo "=== Copie du boot ==="
-
-          rm -f "$BOOT_PART"
-
+          echo "=== Copie de l'image patchée (${IMAGE_TYPE}) ==="
+          
+          rm -f "$IMAGE_PART"
+          
           cp \
-            "$BOOT_IMG" \
-            "$BOOT_PART"
-
-          test -s "$BOOT_PART"
-
-          mv -f "$BOOT_PART" "$BOOT_FINAL"
+            "$PATCHED_IMAGE" \
+            "$IMAGE_PART"
+          
+          test -s "$IMAGE_PART"
+          
+          mv -f "$IMAGE_PART" "$IMAGE_FINAL"
 
           echo
           echo "=== Copie du JSON historisé ==="
