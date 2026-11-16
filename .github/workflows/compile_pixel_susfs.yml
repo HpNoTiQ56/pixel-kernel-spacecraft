@@ -815,22 +815,24 @@ jobs:
       - name: Detect kernel root
         id: root
         shell: bash
-        env:
-          SPACECRAFT_BUILD_ID: ${{ steps.stockkernel.outputs.spacecraft_build_id }}
         run: |
           set -euo pipefail
 
-          KERNEL_ROOT="$WORKSPACE/build/kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}"
-          GKI_ROOT="$KERNEL_ROOT/common/gki"
-
           echo "=== Sélection du kernel ==="
           echo "KERNEL_FAMILY=$KERNEL_FAMILY"
-          echo "SPACECRAFT_BUILD_ID=$SPACECRAFT_BUILD_ID"
-          echo "KERNEL_ROOT=$KERNEL_ROOT"
-          echo "GKI_ROOT=$GKI_ROOT"
 
-          if [ ! -d "$KERNEL_ROOT" ]; then
-            echo "::error::Kernel Spacecraft attendu introuvable : $KERNEL_ROOT"
+          mapfile -t KERNEL_CANDIDATES < <(
+            find "$WORKSPACE/build" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -name "kernel-${KERNEL_FAMILY}-*" \
+              -print \
+              | sort
+          )
+
+          if [ "${#KERNEL_CANDIDATES[@]}" -eq 0 ]; then
+            echo "::error::Aucun kernel ${KERNEL_FAMILY} trouvé"
             echo
             echo "=== Kernels disponibles ==="
             find "$WORKSPACE/build" \
@@ -843,6 +845,15 @@ jobs:
             exit 1
           fi
 
+          if [ "${#KERNEL_CANDIDATES[@]}" -ne 1 ]; then
+            echo "::error::Plusieurs kernels ${KERNEL_FAMILY} trouvés :"
+            printf '%s\n' "${KERNEL_CANDIDATES[@]}"
+            exit 1
+          fi
+
+          KERNEL_ROOT="${KERNEL_CANDIDATES[0]}"
+          GKI_ROOT="$KERNEL_ROOT/common/gki"
+
           if [ ! -d "$GKI_ROOT" ]; then
             echo "::error::Répertoire GKI introuvable : $GKI_ROOT"
             exit 1
@@ -851,15 +862,20 @@ jobs:
           test -f "$GKI_ROOT/Makefile"
           test -f "$GKI_ROOT/BUILD.bazel"
 
-          echo "kernel_root=$KERNEL_ROOT" >> "$GITHUB_OUTPUT"
-          echo "gki_root=$GKI_ROOT" >> "$GITHUB_OUTPUT"
+          SOURCE_BUILD_ID="${KERNEL_ROOT##*-}"
+
+          {
+            echo "kernel_root=$KERNEL_ROOT"
+            echo "gki_root=$GKI_ROOT"
+            echo "source_build_id=$SOURCE_BUILD_ID"
+          } >> "$GITHUB_OUTPUT"
 
           echo
           echo "=== Kernel sélectionné ==="
           echo "KERNEL_ROOT=$KERNEL_ROOT"
           echo "GKI_ROOT=$GKI_ROOT"
+          echo "SOURCE_BUILD_ID=$SOURCE_BUILD_ID"
           
-
       - name: Detect Android KMI version
         id: kmi
         shell: bash
