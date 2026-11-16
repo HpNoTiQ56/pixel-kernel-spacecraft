@@ -815,29 +815,50 @@ jobs:
       - name: Detect kernel root
         id: root
         shell: bash
+        env:
+          SPACECRAFT_BUILD_ID: ${{ steps.stockkernel.outputs.spacecraft_build_id }}
         run: |
           set -euo pipefail
 
-          GKI_ROOT="$(
-            find "$WORKSPACE/build" -mindepth 2 -maxdepth 6 \
-              -type d -path '*/common/gki' -print -quit
-          )"
+          KERNEL_ROOT="$WORKSPACE/build/kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}"
+          GKI_ROOT="$KERNEL_ROOT/common/gki"
 
-          if [ -z "$GKI_ROOT" ]; then
-            echo "::error::Répertoire common/gki introuvable"
-            find "$WORKSPACE/build" -mindepth 1 -maxdepth 4 -type d -print | sort | head -300
+          echo "=== Sélection du kernel ==="
+          echo "KERNEL_FAMILY=$KERNEL_FAMILY"
+          echo "SPACECRAFT_BUILD_ID=$SPACECRAFT_BUILD_ID"
+          echo "KERNEL_ROOT=$KERNEL_ROOT"
+          echo "GKI_ROOT=$GKI_ROOT"
+
+          if [ ! -d "$KERNEL_ROOT" ]; then
+            echo "::error::Kernel Spacecraft attendu introuvable : $KERNEL_ROOT"
+            echo
+            echo "=== Kernels disponibles ==="
+            find "$WORKSPACE/build" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -name 'kernel-*' \
+              -printf '%f\n' \
+              | sort
             exit 1
           fi
 
-          KERNEL_ROOT="$(dirname "$(dirname "$GKI_ROOT")")"
+          if [ ! -d "$GKI_ROOT" ]; then
+            echo "::error::Répertoire GKI introuvable : $GKI_ROOT"
+            exit 1
+          fi
 
           test -f "$GKI_ROOT/Makefile"
           test -f "$GKI_ROOT/BUILD.bazel"
 
           echo "kernel_root=$KERNEL_ROOT" >> "$GITHUB_OUTPUT"
           echo "gki_root=$GKI_ROOT" >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "=== Kernel sélectionné ==="
           echo "KERNEL_ROOT=$KERNEL_ROOT"
           echo "GKI_ROOT=$GKI_ROOT"
+          
 
       - name: Detect Android KMI version
         id: kmi
