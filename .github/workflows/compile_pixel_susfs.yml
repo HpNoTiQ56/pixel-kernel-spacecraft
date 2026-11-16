@@ -1064,31 +1064,31 @@ jobs:
 
           find "$GKI_ROOT" -type f -name '*.rej' -print -exec cat {} \; || true
 
-      - name: Apply Spacecraft SUSFS fixups
-        shell: bash
-        env:
-          GKI_ROOT: ${{ steps.root.outputs.gki_root }}
-        run: |
-          set -euo pipefail
+      # - name: Apply Spacecraft SUSFS fixups
+      #   shell: bash
+      #   env:
+      #     GKI_ROOT: ${{ steps.root.outputs.gki_root }}
+      #   run: |
+      #     set -euo pipefail
 
-          FIXUP_PATCH="$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
-          test -s "$FIXUP_PATCH"
-          cd "$GKI_ROOT"
+      #     FIXUP_PATCH="$GITHUB_WORKSPACE/patches/0001-spacecraft-16238327-susfs-fixups.patch"
+      #     test -s "$FIXUP_PATCH"
+      #     cd "$GKI_ROOT"
 
-          patch --dry-run --forward --batch -p1 < "$FIXUP_PATCH"
-          patch --forward --batch -p1 < "$FIXUP_PATCH"
+      #     patch --dry-run --forward --batch -p1 < "$FIXUP_PATCH"
+      #     patch --forward --batch -p1 < "$FIXUP_PATCH"
 
-          rm -f fs/exec.c.rej fs/proc/task_mmu.c.rej
+      #     rm -f fs/exec.c.rej fs/proc/task_mmu.c.rej
 
-          REMAINING_REJECTS="$(find "$GKI_ROOT" -type f -name '*.rej' -print)"
-          if [ -n "$REMAINING_REJECTS" ]; then
-            echo "::error::Rejets SUSFS restants:"
-            echo "$REMAINING_REJECTS"
-            exit 1
-          fi
+      #     REMAINING_REJECTS="$(find "$GKI_ROOT" -type f -name '*.rej' -print)"
+      #     if [ -n "$REMAINING_REJECTS" ]; then
+      #       echo "::error::Rejets SUSFS restants:"
+      #       echo "$REMAINING_REJECTS"
+      #       exit 1
+      #     fi
 
-          test -s fs/susfs.c
-          test -s include/linux/susfs.h
+      #     test -s fs/susfs.c
+      #     test -s include/linux/susfs.h
 
       - name: Verify SUSFS kernel integration
         shell: bash
