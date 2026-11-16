@@ -799,10 +799,13 @@ jobs:
 
           echo "=== LEVEL 1 ==="
           find "$WORKSPACE/build" -mindepth 1 -maxdepth 1 -printf '%y %p\n' | sort
+
           echo "=== LEVEL 2 ==="
-          find "$WORKSPACE/build" -mindepth 1 -maxdepth 2 -printf '%y %p\n' | sort | head -250
+          find "$WORKSPACE/build" -mindepth 1 -maxdepth 2 -printf '%y %p\n' | sort | head -250 || true
+
           echo "=== SIZE ==="
           du -sh "$WORKSPACE/build"/* 2>/dev/null | sort -h || true
+
           echo "=== KERNEL MARKERS ==="
           find "$WORKSPACE/build" -maxdepth 6 \
             \( -name BUILD.bazel -o -name WORKSPACE -o -name MODULE.bazel \
