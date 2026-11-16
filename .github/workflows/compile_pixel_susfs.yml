@@ -496,7 +496,7 @@ jobs:
             echo "- Archive attendue : \`kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}.tar.xz\`"
           } >> "$GITHUB_STEP_SUMMARY"
           
-      - name: Find exact kernel archive recursively in Drive
+      - name: Resolve kernel sources in Drive
         id: kernel
         shell: bash
         env:
@@ -509,14 +509,17 @@ jobs:
           DRIVE_API="https://www.googleapis.com/drive/v3/files"
           FOLDER_MIME="application/vnd.google-apps.folder"
           EXPECTED_FILE="kernel-${KERNEL_FAMILY}-${SPACECRAFT_BUILD_ID}.tar.xz"
-          RESULTS_FILE="$RUNNER_TEMP/drive-kernel-results.jsonl"
+          EXACT_RESULTS="$RUNNER_TEMP/drive-kernel-exact-results.jsonl"
+          BUNDLE_RESULTS="$RUNNER_TEMP/drive-kernel-bundle-results.jsonl"
 
-          rm -f "$RESULTS_FILE"
-          touch "$RESULTS_FILE"
+          rm -f "$EXACT_RESULTS" "$BUNDLE_RESULTS"
+          touch "$EXACT_RESULTS" "$BUNDLE_RESULTS"
 
-          echo "=== Recherche récursive Google Drive ==="
-          echo "Dossier racine : $ROOT_FOLDER_ID"
-          echo "Archive exacte : $EXPECTED_FILE"
+          echo "=== Résolution des sources kernel dans Google Drive ==="
+          echo "Dossier racine      : $ROOT_FOLDER_ID"
+          echo "Archive kernel cible: $EXPECTED_FILE"
+          echo "Paquets acceptés    : kernels-*"
+          echo "Paquets ignorés     : platform-*"
 
           declare -a FOLDER_QUEUE=("$ROOT_FOLDER_ID")
           declare -A VISITED_FOLDERS=()
@@ -567,86 +570,129 @@ jobs:
                 ITEM_NAME="$(jq -r '.name' <<< "$ITEM")"
                 ITEM_MIME="$(jq -r '.mimeType' <<< "$ITEM")"
 
+                case "$ITEM_NAME" in
+                  platform-*)
+                    echo "Ignoré: $ITEM_MIME  $ITEM_NAME"
+                    continue
+                    ;;
+                esac
+
                 echo "$ITEM_MIME  $ITEM_NAME"
 
                 if [ "$ITEM_MIME" = "$FOLDER_MIME" ]; then
                   FOLDER_QUEUE+=("$ITEM_ID")
                 elif [ "$ITEM_NAME" = "$EXPECTED_FILE" ]; then
-                  printf '%s\n' "$ITEM" >> "$RESULTS_FILE"
+                  printf '%s\n' "$ITEM" >> "$EXACT_RESULTS"
+                elif [[ "$ITEM_NAME" == kernels-* ]]; then
+                  printf '%s\n' "$ITEM" >> "$BUNDLE_RESULTS"
                 fi
-              done < <(jq -c '.files[]' <<< "$RESPONSE")
+              done < <(jq -c '.files[]?' <<< "$RESPONSE")
 
               PAGE_TOKEN="$(jq -r '.nextPageToken // empty' <<< "$RESPONSE")"
               [ -n "$PAGE_TOKEN" ] || break
             done
           done
 
-          MATCH_COUNT="$(wc -l < "$RESULTS_FILE" | tr -d '[:space:]')"
+          EXACT_COUNT="$(wc -l < "$EXACT_RESULTS" | tr -d '[:space:]')"
+          BUNDLE_COUNT="$(wc -l < "$BUNDLE_RESULTS" | tr -d '[:space:]')"
 
-          if [ "$MATCH_COUNT" -eq 0 ]; then
-            echo "::error::Archive exacte introuvable: $EXPECTED_FILE"
-            echo "::error::Aucun fallback vers une autre révision n'est autorisé"
+          if [ "$EXACT_COUNT" -gt 0 ]; then
+            if [ "$EXACT_COUNT" -gt 1 ]; then
+              echo "::warning::$EXACT_COUNT archives exactes trouvées; sélection de la plus récemment modifiée"
+            fi
+
+            FILE="$(jq -s -c 'sort_by(.modifiedTime // "") | reverse | .[0]' "$EXACT_RESULTS")"
+            SELECTION_MODE="exact"
+          elif [ "$BUNDLE_COUNT" -gt 0 ]; then
+            if [ "$BUNDLE_COUNT" -gt 1 ]; then
+              echo "::warning::$BUNDLE_COUNT paquets kernels-* trouvés; sélection du plus récemment modifié"
+            fi
+
+            FILE="$(jq -s -c 'sort_by(.modifiedTime // "") | reverse | .[0]' "$BUNDLE_RESULTS")"
+            SELECTION_MODE="bundle"
+          else
+            echo "::error::Aucune source kernel trouvée"
+            echo "::error::Ni $EXPECTED_FILE ni aucun fichier kernels-* n'est présent sous le dossier fourni"
             exit 1
           fi
 
-          if [ "$MATCH_COUNT" -gt 1 ]; then
-            echo "::warning::$MATCH_COUNT copies trouvées; sélection de la plus récemment modifiée"
-          fi
-
-          FILE="$(
-            jq -s -c 'sort_by(.modifiedTime) | reverse | .[0]' "$RESULTS_FILE"
-          )"
-
           FILE_ID="$(jq -r '.id' <<< "$FILE")"
-          FILE_NAME="$(jq -r '.name' <<< "$FILE")"
+          DRIVE_FILE_NAME="$(jq -r '.name' <<< "$FILE")"
           FILE_SIZE="$(jq -r '.size // "inconnue"' <<< "$FILE")"
           FILE_DATE="$(jq -r '.modifiedTime // "inconnue"' <<< "$FILE")"
 
+          if [ "$SELECTION_MODE" = "exact" ]; then
+            LOCAL_FILE_NAME="$EXPECTED_FILE"
+          else
+            LOCAL_FILE_NAME="$DRIVE_FILE_NAME"
+          fi
+
+          if [[ "$LOCAL_FILE_NAME" == */* ]] || [ -z "$LOCAL_FILE_NAME" ]; then
+            echo "::error::Nom de fichier Drive non exploitable: $LOCAL_FILE_NAME"
+            exit 1
+          fi
+
           {
             echo "file_id=$FILE_ID"
-            echo "file_name=$FILE_NAME"
+            echo "file_name=$LOCAL_FILE_NAME"
+            echo "drive_file_name=$DRIVE_FILE_NAME"
+            echo "expected_archive=$EXPECTED_FILE"
+            echo "selection_mode=$SELECTION_MODE"
             echo "file_revision=$SPACECRAFT_BUILD_ID"
           } >> "$GITHUB_OUTPUT"
 
-          echo "=== Archive sélectionnée ==="
-          echo "Nom     : $FILE_NAME"
-          echo "ID      : $FILE_ID"
-          echo "Taille  : $FILE_SIZE"
-          echo "Date    : $FILE_DATE"
+          echo "=== Sources kernel sélectionnées ==="
+          echo "Mode             : $SELECTION_MODE"
+          echo "Élément Drive    : $DRIVE_FILE_NAME"
+          echo "Archive cible    : $EXPECTED_FILE"
+          echo "ID               : $FILE_ID"
+          echo "Taille           : $FILE_SIZE"
+          echo "Date             : $FILE_DATE"
 
           {
-            echo "### Archive Drive sélectionnée"
+            echo "### Sources kernel Drive sélectionnées"
             echo
-            echo "- Archive: \`$FILE_NAME\`"
-            echo "- Date Drive: \`$FILE_DATE\`"
+            echo "- Élément Drive : \`$DRIVE_FILE_NAME\`"
+            echo "- Archive kernel : \`$EXPECTED_FILE\`"
+            echo "- Mode : \`$SELECTION_MODE\`"
+            echo "- Date Drive : \`$FILE_DATE\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Download selected kernel archive
+      - name: Download selected kernel sources
         shell: bash
         env:
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           FILE_ID: ${{ steps.kernel.outputs.file_id }}
           FILE_NAME: ${{ steps.kernel.outputs.file_name }}
+          DRIVE_FILE_NAME: ${{ steps.kernel.outputs.drive_file_name }}
+          EXPECTED_ARCHIVE: ${{ steps.kernel.outputs.expected_archive }}
+          SELECTION_MODE: ${{ steps.kernel.outputs.selection_mode }}
         run: |
           set -euo pipefail
 
           ARCHIVE="$WORKSPACE/src/$FILE_NAME"
+          DOWNLOADED_FILE="$RUNNER_TEMP/drive-kernel-download.part"
           TEMP_ARCHIVE="${ARCHIVE}.part"
+          CONTENTS_FILE="$RUNNER_TEMP/drive-kernel-contents.txt"
 
           if [ -s "$ARCHIVE" ]; then
-            echo "=== Archive locale déjà présente ==="
+            echo "=== Archive kernel locale déjà présente ==="
             ls -lh "$ARCHIVE"
 
-            if xz --test "$ARCHIVE"; then
-              echo "Archive XZ locale valide"
+            if tar -tf "$ARCHIVE" >/dev/null; then
+              echo "Archive kernel locale valide"
               exit 0
             fi
 
-            echo "::warning::Archive locale invalide, nouveau téléchargement"
+            echo "::warning::Archive kernel locale invalide, nouveau téléchargement"
             rm -f "$ARCHIVE"
           fi
 
-          rm -f "$TEMP_ARCHIVE"
+          rm -f "$DOWNLOADED_FILE" "$TEMP_ARCHIVE" "$CONTENTS_FILE"
+
+          echo "=== Téléchargement de l'élément Drive kernel ==="
+          echo "Élément Drive : $DRIVE_FILE_NAME"
+          echo "Mode          : $SELECTION_MODE"
 
           curl --fail --location \
             --retry 3 \
@@ -655,14 +701,61 @@ jobs:
             --connect-timeout 30 \
             --header "Authorization: Bearer $ACCESS_TOKEN" \
             "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&supportsAllDrives=true" \
-            --output "$TEMP_ARCHIVE"
+            --output "$DOWNLOADED_FILE"
 
-          test -s "$TEMP_ARCHIVE"
-          file "$TEMP_ARCHIVE"
-          xz --test "$TEMP_ARCHIVE"
+          test -s "$DOWNLOADED_FILE"
+          file "$DOWNLOADED_FILE"
+          ls -lh "$DOWNLOADED_FILE"
+
+          if [ "$SELECTION_MODE" = "exact" ]; then
+            tar -tf "$DOWNLOADED_FILE" >/dev/null
+            mv "$DOWNLOADED_FILE" "$TEMP_ARCHIVE"
+          else
+            ENTRY=""
+
+            if unzip -Z1 "$DOWNLOADED_FILE" > "$CONTENTS_FILE" 2>/dev/null; then
+              ENTRY="$(grep -E "(^|/)${EXPECTED_ARCHIVE//./\\.}$" "$CONTENTS_FILE" | head -n1 || true)"
+
+              if [ -n "$ENTRY" ]; then
+                echo "Archive kernel trouvée dans le paquet ZIP : $ENTRY"
+                unzip -p "$DOWNLOADED_FILE" "$ENTRY" > "$TEMP_ARCHIVE"
+              fi
+            fi
+
+            if [ -z "$ENTRY" ]; then
+              rm -f "$CONTENTS_FILE"
+
+              if tar -tf "$DOWNLOADED_FILE" > "$CONTENTS_FILE" 2>/dev/null; then
+                ENTRY="$(grep -E "(^|/)${EXPECTED_ARCHIVE//./\\.}$" "$CONTENTS_FILE" | head -n1 || true)"
+
+                if [ -n "$ENTRY" ]; then
+                  echo "Archive kernel trouvée dans le paquet TAR : $ENTRY"
+                  tar -xOf "$DOWNLOADED_FILE" "$ENTRY" > "$TEMP_ARCHIVE"
+                else
+                  echo "Le fichier kernels-* est directement une archive TAR des sources"
+                  mv "$DOWNLOADED_FILE" "$TEMP_ARCHIVE"
+                fi
+              fi
+            fi
+
+            if [ ! -s "$TEMP_ARCHIVE" ]; then
+              echo "::error::Sources kernel inexploitables dans $DRIVE_FILE_NAME"
+              echo "::error::Le fichier kernels-* doit être une archive TAR, ou un ZIP contenant $EXPECTED_ARCHIVE"
+
+              if [ -s "$CONTENTS_FILE" ]; then
+                echo "=== Premier contenu détecté ==="
+                head -n 100 "$CONTENTS_FILE"
+              fi
+
+              exit 1
+            fi
+          fi
+
+          tar -tf "$TEMP_ARCHIVE" >/dev/null
           mv "$TEMP_ARCHIVE" "$ARCHIVE"
+          rm -f "$DOWNLOADED_FILE" "$CONTENTS_FILE"
 
-          echo "=== Archive prête ==="
+          echo "=== Archive kernel prête ==="
           ls -lh "$ARCHIVE"
 
       - name: Cleanup old kernel archives
@@ -671,7 +764,7 @@ jobs:
           set -euo pipefail
 
           find "$WORKSPACE/src" -maxdepth 1 -type f \
-            \( -name 'kernel-*.tar.xz' -o -name 'kernels-*.tar.xz' \) \
+            \( -name 'kernel-*.tar.xz' -o -name 'kernels-*' \) \
             -mtime +90 -delete
 
           find "$WORKSPACE/src" -maxdepth 1 -type f -name '*.part' -delete
@@ -687,7 +780,7 @@ jobs:
 
           ARCHIVE="$WORKSPACE/src/$FILE_NAME"
           test -s "$ARCHIVE"
-          xz --test "$ARCHIVE"
+          tar -tf "$ARCHIVE" >/dev/null
 
           rm -rf "$WORKSPACE/build"
           mkdir -p "$WORKSPACE/build"
